@@ -2098,3 +2098,1001 @@ This implementation plan provides:
 ---
 
 **Questions or clarifications?** Feel free to ask before starting implementation!
+
+---
+
+## Phase 6: Import & Edit COCO Annotations (Post-MVP Enhancement)
+
+**Status**: Not yet implemented
+**Estimated Time**: 20-25 minutes
+**Goal**: Load existing COCO JSON annotations, render them on canvas, and enable label editing for all annotations.
+
+### Overview
+
+This phase enables users to:
+1. Import existing COCO JSON annotation files
+2. Match imported annotations to loaded images
+3. Render imported annotations on canvas (identical to manually created ones)
+4. Edit labels of ANY annotation (both imported and manually created)
+5. Continue annotating after import (seamless workflow)
+
+**Important**: Imported annotations behave identically to manually created annotations - they can be selected, deleted, and edited.
+
+### 6.1: Import Service (12 min)
+
+**New File**: `core/import_service.py`
+
+**Purpose**: Framework-agnostic service to load COCO JSON and convert to internal models.
+
+```python
+class ImportService:
+    """
+    Service for importing annotations from COCO JSON format.
+    Framework-agnostic - works with any UI.
+    """
+
+    Methods:
+        # Import from COCO JSON
+        - import_from_coco(
+            coco_path: str,
+            base_image_path: str = None
+          ) -> tuple[list[ImageMetadata], dict[str, str]]
+            """
+            Load COCO JSON and return ImageMetadata objects with annotations.
+
+            Args:
+                coco_path: Path to COCO JSON file
+                base_image_path: Optional base directory for images
+                                (if None, uses COCO file_name as-is)
+
+            Returns:
+                Tuple of (list of ImageMetadata, label_map)
+                label_map: {label_id: label_name} for updating LabelManager
+
+            Raises:
+                FileNotFoundError: If COCO file doesn't exist
+                ValueError: If COCO JSON is invalid format
+            """
+
+        # Helper methods
+        - _validate_coco_format(coco_data: dict) -> bool
+            # Validate has required keys: images, annotations, categories
+
+        - _match_images_to_files(
+            coco_images: list,
+            base_path: str
+          ) -> dict[int, str]
+            # Match COCO image IDs to actual file paths
+            # Returns: {coco_image_id: resolved_file_path}
+
+        - _build_label_map(categories: list) -> dict[int, str]
+            # Extract {label_id: label_name} from COCO categories
+
+        - _convert_annotations(
+            coco_annotations: list,
+            label_map: dict
+          ) -> dict[int, list[Annotation]]
+            # Convert COCO annotations to internal Annotation objects
+            # Returns: {coco_image_id: [Annotation, ...]}
+```
+
+**Implementation Details:**
+
+```python
+import json
+from pathlib import Path
+from datetime import datetime
+from core.models import ImageMetadata, Annotation, BoundingBox
+
+class ImportService:
+    def import_from_coco(
+        self,
+        coco_path: str,
+        base_image_path: str = None
+    ) -> tuple[list[ImageMetadata], dict[str, str]]:
+        """Import annotations from COCO JSON format."""
+
+        # Load COCO JSON
+        coco_path = Path(coco_path)
+        if not coco_path.exists():
+            raise FileNotFoundError(f"COCO file not found: {coco_path}")
+
+        with open(coco_path, 'r') as f:
+            coco_data = json.load(f)
+
+        # Validate format
+        if not self._validate_coco_format(coco_data):
+            raise ValueError("Invalid COCO JSON format")
+
+        # Extract categories (labels)
+        label_map = self._build_label_map(coco_data['categories'])
+
+        # Match COCO images to file paths
+        image_path_map = self._match_images_to_files(
+            coco_data['images'],
+            base_image_path or str(coco_path.parent)
+        )
+
+        # Convert annotations
+        annotations_by_image = self._convert_annotations(
+            coco_data['annotations'],
+            label_map
+        )
+
+        # Build ImageMetadata objects
+        image_metadata_list = []
+        for coco_img in coco_data['images']:
+            coco_img_id = coco_img['id']
+
+            # Get resolved file path
+            file_path = image_path_map.get(coco_img_id)
+            if not file_path:
+                print(f"Warning: Could not find file for image ID {coco_img_id}")
+                continue
+
+            # Create ImageMetadata
+            metadata = ImageMetadata(
+                id=str(uuid.uuid4()),  # Generate new internal ID
+                file_path=file_path,
+                filename=coco_img['file_name'],
+                width=coco_img['width'],
+                height=coco_img['height'],
+                format=Path(coco_img['file_name']).suffix.upper().lstrip('.'),
+                annotations=annotations_by_image.get(coco_img_id, [])
+            )
+
+            image_metadata_list.append(metadata)
+
+        return image_metadata_list, label_map
+
+    def _validate_coco_format(self, coco_data: dict) -> bool:
+        """Validate COCO JSON has required structure."""
+        required_keys = ['images', 'annotations', 'categories']
+        return all(key in coco_data for key in required_keys)
+
+    def _match_images_to_files(
+        self,
+        coco_images: list,
+        base_path: str
+    ) -> dict[int, str]:
+        """
+        Match COCO image entries to actual file paths.
+
+        Tries multiple strategies:
+        1. Exact filename match in base_path
+        2. Recursive search in base_path subdirectories
+        3. Use file_name as relative path from base_path
+        """
+        base_path = Path(base_path)
+        image_map = {}
+
+        for img in coco_images:
+            img_id = img['id']
+            filename = img['file_name']
+
+            # Strategy 1: Direct path (filename may include subdirs)
+            candidate = base_path / filename
+            if candidate.exists():
+                image_map[img_id] = str(candidate.absolute())
+                continue
+
+            # Strategy 2: Search for filename only (ignore subdirs in file_name)
+            basename = Path(filename).name
+            candidate = base_path / basename
+            if candidate.exists():
+                image_map[img_id] = str(candidate.absolute())
+                continue
+
+            # Strategy 3: Recursive search
+            matches = list(base_path.rglob(basename))
+            if matches:
+                image_map[img_id] = str(matches[0].absolute())
+                continue
+
+            print(f"Warning: Could not find image file: {filename}")
+
+        return image_map
+
+    def _build_label_map(self, categories: list) -> dict[int, str]:
+        """Extract label mapping from COCO categories."""
+        return {cat['id']: cat['name'] for cat in categories}
+
+    def _convert_annotations(
+        self,
+        coco_annotations: list,
+        label_map: dict
+    ) -> dict[int, list[Annotation]]:
+        """Convert COCO annotations to internal format."""
+        annotations_by_image = {}
+
+        for coco_ann in coco_annotations:
+            image_id = coco_ann['image_id']
+            category_id = coco_ann['category_id']
+            bbox_coco = coco_ann['bbox']  # [x, y, width, height]
+
+            # Create BoundingBox
+            box = BoundingBox(
+                x=int(bbox_coco[0]),
+                y=int(bbox_coco[1]),
+                width=int(bbox_coco[2]),
+                height=int(bbox_coco[3])
+            )
+
+            # Create Annotation
+            annotation = Annotation(
+                id=str(uuid.uuid4()),  # Generate new internal ID
+                bounding_box=box,
+                label_id=category_id,
+                label_name=label_map.get(category_id, f"unknown_{category_id}"),
+                image_id="",  # Will be set when added to ImageMetadata
+                created_at=datetime.now(),
+                modified_at=datetime.now()
+            )
+
+            # Group by image
+            if image_id not in annotations_by_image:
+                annotations_by_image[image_id] = []
+            annotations_by_image[image_id].append(annotation)
+
+        return annotations_by_image
+```
+
+### 6.2: Edit Label Functionality (5 min)
+
+**Modify**: `core/annotation_manager.py`
+
+Add method to update annotation label:
+
+```python
+class AnnotationManager:
+    # ... existing methods ...
+
+    def update_annotation_label(
+        self,
+        annotation_id: str,
+        new_label_id: int,
+        new_label_name: str
+    ) -> bool:
+        """
+        Update the label of an existing annotation.
+
+        Args:
+            annotation_id: ID of annotation to update
+            new_label_id: New integer label ID
+            new_label_name: New label name
+
+        Returns:
+            True if successful, False if annotation not found
+        """
+        annotation = self._annotations.get(annotation_id)
+        if not annotation:
+            return False
+
+        annotation.label_id = new_label_id
+        annotation.label_name = new_label_name
+        annotation.modified_at = datetime.now()
+
+        return True
+```
+
+### 6.3: Edit Label Dialog (3 min)
+
+**Modify**: `ui/dialogs.py`
+
+Add new dialog for editing labels:
+
+```python
+class EditLabelDialog(QDialog):
+    """
+    Dialog for editing an annotation's label.
+    Shows dropdown of available labels from LabelManager.
+    """
+
+    def __init__(self, current_label_id: int, label_manager, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Edit Label")
+        self.label_manager = label_manager
+
+        layout = QVBoxLayout()
+
+        # Label dropdown
+        self.label_combo = QComboBox()
+        labels = label_manager.get_all_labels()  # {id: name}
+        for label_id, label_name in sorted(labels.items()):
+            self.label_combo.addItem(f"{label_id}: {label_name}", label_id)
+
+        # Set current label as selected
+        for i in range(self.label_combo.count()):
+            if self.label_combo.itemData(i) == current_label_id:
+                self.label_combo.setCurrentIndex(i)
+                break
+
+        layout.addWidget(QLabel("Select new label:"))
+        layout.addWidget(self.label_combo)
+
+        # Buttons
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.setLayout(layout)
+
+    def get_selected_label(self) -> tuple[int, str] | None:
+        """Return (label_id, label_name) if OK clicked, None otherwise."""
+        if self.result():
+            label_id = self.label_combo.currentData()
+            label_name = self.label_combo.currentText().split(': ', 1)[1]
+            return (label_id, label_name)
+        return None
+```
+
+### 6.4: UI Integration - Import (4 min)
+
+**Modify**: `ui/main_window.py`
+
+Add import functionality:
+
+```python
+class MainWindow(QMainWindow):
+    def __init__(self):
+        # ... existing initialization ...
+        self.import_service = ImportService()  # Add import service
+
+    def _setup_menu_bar(self):
+        # ... existing menu setup ...
+
+        # Add Import action after Load Images
+        import_action = file_menu.addAction("Import COCO Annotations")
+        import_action.setShortcut("Ctrl+I")
+        import_action.triggered.connect(self.import_annotations)
+
+    def import_annotations(self) -> None:
+        """
+        Import annotations from COCO JSON file.
+        Merges with existing images or loads new ones.
+        """
+        # Select COCO JSON file
+        coco_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select COCO JSON File",
+            "",
+            "JSON Files (*.json)"
+        )
+
+        if not coco_path:
+            return
+
+        # Ask for base image directory (optional)
+        reply = QMessageBox.question(
+            self,
+            "Base Image Directory",
+            "Do you want to specify a base directory for images?\n"
+            "(If No, will use COCO JSON directory)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        base_path = None
+        if reply == QMessageBox.StandardButton.Yes:
+            base_path = QFileDialog.getExistingDirectory(
+                self,
+                "Select Base Image Directory"
+            )
+
+        try:
+            # Import annotations
+            self.status_bar.showMessage("Importing annotations...")
+
+            imported_images, label_map = self.import_service.import_from_coco(
+                coco_path,
+                base_path
+            )
+
+            # Update LabelManager with imported labels
+            existing_labels = self.label_manager.get_all_labels()
+            for label_id, label_name in label_map.items():
+                if label_id not in existing_labels:
+                    self.label_manager.add_label(label_id, label_name)
+
+            # Add imported images to ImageManager
+            loaded_count = 0
+            for img_metadata in imported_images:
+                # Add to image manager
+                self.image_manager.add_image(img_metadata.file_path, img_metadata)
+
+                # Register annotations with AnnotationManager
+                for annotation in img_metadata.annotations:
+                    annotation.image_id = img_metadata.id
+                    self.annotation_manager._annotations[annotation.id] = annotation
+
+                loaded_count += 1
+
+            # Display first imported image
+            if loaded_count > 0:
+                self._display_current_image()
+
+                total_annotations = sum(
+                    len(img.annotations) for img in imported_images
+                )
+
+                QMessageBox.information(
+                    self,
+                    "Import Successful",
+                    f"Imported {loaded_count} images with "
+                    f"{total_annotations} annotations."
+                )
+
+                self.status_bar.showMessage(
+                    f"Imported {loaded_count} images, {total_annotations} annotations"
+                )
+
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Import Failed",
+                f"Failed to import annotations:\n{str(e)}"
+            )
+            self.status_bar.showMessage("Import failed")
+```
+
+### 6.5: UI Integration - Edit Label (2 min)
+
+**Modify**: `ui/main_window.py`
+
+Wire up the "Edit Label" button:
+
+```python
+class MainWindow(QMainWindow):
+    def _connect_signals(self):
+        # ... existing signals ...
+
+        # Connect Edit Label button from annotation list
+        if self.annotation_list:
+            self.annotation_list.annotation_edit_requested.connect(
+                self._on_edit_label_requested
+            )
+
+    def _on_edit_label_requested(self, annotation_id: str) -> None:
+        """
+        Handle edit label request from annotation list.
+        Shows dialog to select new label.
+        """
+        # Get current annotation
+        annotation = self.annotation_manager.get_annotation(annotation_id)
+        if not annotation:
+            return
+
+        # Show edit dialog
+        dialog = EditLabelDialog(
+            annotation.label_id,
+            self.label_manager,
+            self
+        )
+
+        if dialog.exec():
+            result = dialog.get_selected_label()
+            if result:
+                new_label_id, new_label_name = result
+
+                # Update annotation
+                success = self.annotation_manager.update_annotation_label(
+                    annotation_id,
+                    new_label_id,
+                    new_label_name
+                )
+
+                if success:
+                    # Refresh display
+                    current_image = self.image_manager.get_current_image()
+                    if current_image:
+                        self.canvas.set_annotations(current_image.annotations)
+                        self.annotation_list.set_annotations(current_image.annotations)
+
+                    self.status_bar.showMessage(
+                        f"Updated label to: {new_label_name}"
+                    )
+```
+
+### 6.6: Export Behavior Update (1 min)
+
+**Modify**: `ui/main_window.py`
+
+Update export to prevent accidental overwrites:
+
+```python
+def export_annotations(self) -> None:
+    """Export annotations to file."""
+    # ... existing validation code ...
+
+    # Show file save dialog
+    file_path, _ = QFileDialog.getSaveFileName(
+        self,
+        "Export Annotations",
+        f"annotations{default_ext}",
+        file_filter,
+        options=QFileDialog.Option.DontConfirmOverwrite  # We'll confirm manually
+    )
+
+    if not file_path:
+        return
+
+    # Check if file exists and warn
+    if Path(file_path).exists():
+        reply = QMessageBox.question(
+            self,
+            "File Exists",
+            f"File already exists:\n{file_path}\n\n"
+            "Do you want to overwrite it?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No  # Default to No
+        )
+
+        if reply == QMessageBox.StandardButton.No:
+            return
+
+    # ... continue with export ...
+```
+
+### Phase 6 Deliverables
+
+✅ **Import from COCO JSON**: Load existing annotations with image matching
+✅ **Render imported annotations**: Display identically to manual annotations
+✅ **Edit any annotation label**: Works for both imported and manual annotations
+✅ **Label compatibility**: Merge imported labels with existing label set
+✅ **Export protection**: Warn before overwriting existing files
+
+---
+
+## Phase 7: Subdirectory Support (Post-MVP Enhancement)
+
+**Status**: Not yet implemented
+**Estimated Time**: 15-20 minutes
+**Goal**: Support loading images from multiple subdirectories and preserve relative paths in COCO JSON.
+
+### Overview
+
+This phase enables users to:
+1. Load images from multiple subdirectories under a base directory
+2. Specify base path + list of relative subdirectory paths
+3. Export COCO JSON with relative paths (e.g., `"train/images/cat.jpg"`)
+4. Import COCO JSON and resolve images using base + relative paths
+5. Maintain backward compatibility (optional feature)
+
+**Use Case**:
+```
+dataset/
+├── train/
+│   └── images/
+│       ├── cat1.jpg
+│       ├── cat2.jpg
+├── val/
+│   └── images/
+│       ├── dog1.jpg
+│       ├── dog2.jpg
+└── annotations.json  # Contains relative paths like "train/images/cat1.jpg"
+```
+
+### 7.1: Subdirectory Configuration Model (3 min)
+
+**New File**: `core/models.py` (add new classes)
+
+```python
+@dataclass
+class SubdirectoryConfig:
+    """
+    Configuration for loading images from subdirectories.
+    """
+    base_path: str
+    subdirectories: list[str]  # Relative paths from base
+
+    def __post_init__(self):
+        """Validate paths exist."""
+        base = Path(self.base_path)
+        if not base.exists():
+            raise ValueError(f"Base path does not exist: {self.base_path}")
+
+        for subdir in self.subdirectories:
+            full_path = base / subdir
+            if not full_path.exists():
+                raise ValueError(f"Subdirectory does not exist: {full_path}")
+
+    def get_full_path(self, relative_path: str) -> str:
+        """Convert relative path to absolute path."""
+        return str(Path(self.base_path) / relative_path)
+
+    def get_relative_path(self, absolute_path: str) -> str:
+        """Convert absolute path to relative path (from base)."""
+        abs_path = Path(absolute_path)
+        base = Path(self.base_path)
+        try:
+            return str(abs_path.relative_to(base))
+        except ValueError:
+            # Path is not relative to base, return filename only
+            return abs_path.name
+```
+
+### 7.2: Enhanced Image Loading (5 min)
+
+**Modify**: `ui/dialogs.py`
+
+Add new dialog for subdirectory loading:
+
+```python
+class SubdirectoryLoadDialog(QDialog):
+    """
+    Dialog for loading images from subdirectories.
+    Allows user to specify base path and subdirectory list.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Load Images from Subdirectories")
+        self.resize(500, 400)
+
+        layout = QVBoxLayout()
+
+        # Base path selection
+        base_layout = QHBoxLayout()
+        self.base_path_input = QLineEdit()
+        base_browse_btn = QPushButton("Browse...")
+        base_browse_btn.clicked.connect(self._browse_base_path)
+        base_layout.addWidget(QLabel("Base Directory:"))
+        base_layout.addWidget(self.base_path_input)
+        base_layout.addWidget(base_browse_btn)
+        layout.addLayout(base_layout)
+
+        # Subdirectory list
+        layout.addWidget(QLabel("Subdirectories (relative to base):"))
+
+        # List widget + add/remove buttons
+        list_layout = QHBoxLayout()
+        self.subdir_list = QListWidget()
+        list_layout.addWidget(self.subdir_list)
+
+        button_layout = QVBoxLayout()
+        add_btn = QPushButton("Add...")
+        remove_btn = QPushButton("Remove")
+        add_btn.clicked.connect(self._add_subdirectory)
+        remove_btn.clicked.connect(self._remove_subdirectory)
+        button_layout.addWidget(add_btn)
+        button_layout.addWidget(remove_btn)
+        button_layout.addStretch()
+        list_layout.addLayout(button_layout)
+
+        layout.addLayout(list_layout)
+
+        # Buttons
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.setLayout(layout)
+
+    def _browse_base_path(self):
+        """Browse for base directory."""
+        path = QFileDialog.getExistingDirectory(
+            self,
+            "Select Base Directory"
+        )
+        if path:
+            self.base_path_input.setText(path)
+
+    def _add_subdirectory(self):
+        """Add subdirectory to list."""
+        base_path = self.base_path_input.text()
+        if not base_path:
+            QMessageBox.warning(
+                self,
+                "No Base Path",
+                "Please select a base directory first."
+            )
+            return
+
+        subdir = QFileDialog.getExistingDirectory(
+            self,
+            "Select Subdirectory",
+            base_path
+        )
+
+        if subdir:
+            # Make path relative to base
+            try:
+                relative = Path(subdir).relative_to(Path(base_path))
+                self.subdir_list.addItem(str(relative))
+            except ValueError:
+                QMessageBox.warning(
+                    self,
+                    "Invalid Selection",
+                    "Subdirectory must be under the base directory."
+                )
+
+    def _remove_subdirectory(self):
+        """Remove selected subdirectory from list."""
+        current = self.subdir_list.currentRow()
+        if current >= 0:
+            self.subdir_list.takeItem(current)
+
+    def get_config(self) -> SubdirectoryConfig | None:
+        """Return SubdirectoryConfig if OK clicked."""
+        if self.result():
+            base_path = self.base_path_input.text()
+            subdirs = [
+                self.subdir_list.item(i).text()
+                for i in range(self.subdir_list.count())
+            ]
+
+            if not base_path or not subdirs:
+                return None
+
+            try:
+                return SubdirectoryConfig(base_path, subdirs)
+            except ValueError as e:
+                QMessageBox.warning(self, "Invalid Configuration", str(e))
+                return None
+
+        return None
+```
+
+### 7.3: Enhanced Image Manager (3 min)
+
+**Modify**: `core/image_manager.py`
+
+Add support for relative paths:
+
+```python
+class ImageManager:
+    def __init__(self):
+        # ... existing attributes ...
+        self._base_path: str | None = None  # Optional base path for relative paths
+
+    def set_base_path(self, base_path: str) -> None:
+        """Set base path for relative path resolution."""
+        self._base_path = base_path
+
+    def get_base_path(self) -> str | None:
+        """Get current base path."""
+        return self._base_path
+
+    def load_from_subdirectories(
+        self,
+        config: SubdirectoryConfig,
+        image_loader
+    ) -> int:
+        """
+        Load all images from specified subdirectories.
+
+        Args:
+            config: SubdirectoryConfig with base path and subdirs
+            image_loader: ImageLoader instance
+
+        Returns:
+            Number of images loaded
+        """
+        self._base_path = config.base_path
+        loaded_count = 0
+
+        for subdir in config.subdirectories:
+            full_path = Path(config.base_path) / subdir
+
+            # Find all images in this subdirectory
+            image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.gif']
+            for ext in image_extensions:
+                for img_path in full_path.glob(f'*{ext}'):
+                    try:
+                        pixmap, metadata = image_loader.load_image(str(img_path))
+
+                        # Store relative path in filename for COCO export
+                        relative_path = img_path.relative_to(config.base_path)
+                        metadata.filename = str(relative_path)
+
+                        self.add_image(str(img_path), metadata)
+                        loaded_count += 1
+                    except Exception as e:
+                        print(f"Error loading {img_path}: {e}")
+
+        return loaded_count
+```
+
+### 7.4: Enhanced Export Service (3 min)
+
+**Modify**: `core/export_service.py`
+
+Update COCO export to use relative paths:
+
+```python
+class ExportService:
+    def export_to_coco(
+        self,
+        images: list[ImageMetadata],
+        output_path: str,
+        use_relative_paths: bool = True
+    ) -> None:
+        """
+        Export annotations to COCO JSON format.
+
+        Args:
+            images: List of ImageMetadata objects
+            output_path: Output JSON file path
+            use_relative_paths: If True, use relative paths in file_name
+                               (requires images to have relative paths in filename)
+        """
+        # ... existing validation ...
+
+        for image_idx, image in enumerate(images, start=1):
+            # Use filename field (may contain relative path like "train/images/cat.jpg")
+            file_name = image.filename if use_relative_paths else Path(image.file_path).name
+
+            coco_data["images"].append({
+                "id": image_idx,
+                "file_name": file_name,  # May be relative path
+                "width": image.width,
+                "height": image.height,
+                "date_captured": "",
+                "license": 0,
+                "coco_url": "",
+                "flickr_url": ""
+            })
+
+            # ... rest of annotation export ...
+```
+
+### 7.5: Enhanced Import Service (3 min)
+
+**Modify**: `core/import_service.py`
+
+Update import to handle relative paths with base path:
+
+```python
+class ImportService:
+    def import_from_coco(
+        self,
+        coco_path: str,
+        base_image_path: str = None
+    ) -> tuple[list[ImageMetadata], dict[str, str]]:
+        """
+        Import annotations from COCO JSON format.
+
+        Args:
+            coco_path: Path to COCO JSON file
+            base_image_path: Base directory for resolving relative image paths
+                            If None, uses COCO JSON directory as base
+
+        Returns:
+            Tuple of (list of ImageMetadata, label_map)
+        """
+        # ... existing code ...
+
+        # Use base_image_path if provided, otherwise use COCO file directory
+        base_path = base_image_path or str(coco_path.parent)
+
+        # _match_images_to_files already handles relative paths correctly
+        image_path_map = self._match_images_to_files(
+            coco_data['images'],
+            base_path
+        )
+
+        # ... rest of import logic ...
+```
+
+### 7.6: UI Integration (3 min)
+
+**Modify**: `ui/main_window.py`
+
+Add menu option for subdirectory loading:
+
+```python
+class MainWindow(QMainWindow):
+    def _setup_menu_bar(self):
+        # ... existing menu setup ...
+
+        # Add subdirectory loading option
+        load_subdirs_action = file_menu.addAction("Load from Subdirectories...")
+        load_subdirs_action.setShortcut("Ctrl+Shift+O")
+        load_subdirs_action.triggered.connect(self.load_from_subdirectories)
+
+    def load_from_subdirectories(self) -> None:
+        """Load images from multiple subdirectories."""
+        # Check if labels are defined
+        if not self.label_manager.has_labels():
+            QMessageBox.warning(
+                self,
+                "No Labels Defined",
+                "Please define labels first using File → Define Labels."
+            )
+            self._show_label_setup_dialog()
+            if not self.label_manager.has_labels():
+                return
+
+        # Show subdirectory selection dialog
+        dialog = SubdirectoryLoadDialog(self)
+        config = dialog.get_config()
+
+        if not config:
+            return
+
+        try:
+            # Load images from subdirectories
+            self.status_bar.showMessage("Loading images from subdirectories...")
+
+            loaded_count = self.image_manager.load_from_subdirectories(
+                config,
+                self.image_loader
+            )
+
+            if loaded_count > 0:
+                self._display_current_image()
+                QMessageBox.information(
+                    self,
+                    "Load Successful",
+                    f"Loaded {loaded_count} images from subdirectories."
+                )
+                self.status_bar.showMessage(
+                    f"Loaded {loaded_count} images"
+                )
+            else:
+                QMessageBox.warning(
+                    self,
+                    "No Images",
+                    "No images found in specified subdirectories."
+                )
+
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Load Failed",
+                f"Failed to load images:\n{str(e)}"
+            )
+```
+
+### Phase 7 Deliverables
+
+✅ **Subdirectory loading**: Load images from multiple subdirs under base path
+✅ **Relative path preservation**: Store relative paths in COCO JSON export
+✅ **Import with base path**: Resolve relative paths when importing COCO JSON
+✅ **Backward compatibility**: Optional feature, doesn't break existing workflow
+✅ **Flexible path resolution**: Handles various directory structures
+
+---
+
+## Updated Keyboard Shortcuts
+
+After Phase 6 and 7:
+
+| Action | Shortcut |
+|--------|----------|
+| **Load Images** | `Ctrl+O` |
+| **Load from Subdirectories** | `Ctrl+Shift+O` |
+| **Define Labels** | `Ctrl+L` |
+| **Import COCO Annotations** | `Ctrl+I` |
+| **Export Annotations** | `Ctrl+E` |
+| **Exit Application** | `Ctrl+Q` |
+| **Next Image** | `Right Arrow` or `Down Arrow` |
+| **Previous Image** | `Left Arrow` or `Up Arrow` |
+| **Delete Selected Annotation** | `Delete` |
+| **Switch to Draw Mode** | `D` |
+| **Switch to Select Mode** | `S` |
+
+---
+
+## Summary of Post-MVP Enhancements
+
+**Phase 6 - Import & Edit**:
+- Import existing COCO JSON annotations
+- Match annotations to images intelligently
+- Edit labels for any annotation (imported or manual)
+- Seamless workflow integration
+
+**Phase 7 - Subdirectory Support**:
+- Load images from multiple subdirectories
+- Preserve relative paths in COCO JSON
+- Flexible path resolution on import
+- Maintains backward compatibility
+
+Both phases maintain the clean three-layer architecture and add zero dependencies to the core business logic layer.

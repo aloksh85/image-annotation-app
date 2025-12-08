@@ -18,7 +18,7 @@ A PyQt6-based desktop application for manual image annotation with clean archite
 - **Mode Switching**: Toggle between Draw and Select modes
 - **Bidirectional Sync**: Canvas and list selections stay synchronized
 
-### Export Formats (Phase 5 - Coming Soon)
+### Export Formats
 - **CSV**: Simple tabular format with label IDs and names
 - **COCO JSON**: Industry-standard format for ML training
 
@@ -121,7 +121,7 @@ The annotation appears as a green box with the label name.
   - Press `Delete` key, OR
   - Click the **Delete** button in the annotation list
 
-**Edit Label** (coming in Phase 5):
+**Edit Label** (coming in Phase 6):
 - Select annotation → Click **Edit Label** button
 
 ### Navigation
@@ -148,6 +148,7 @@ The annotation appears as a green box with the label name.
 |--------|----------|
 | **Load Images** | `Ctrl+O` |
 | **Define Labels** | `Ctrl+L` |
+| **Export Annotations** | `Ctrl+E` |
 | **Exit Application** | `Ctrl+Q` |
 | **Next Image** | `Right Arrow` or `Down Arrow` |
 | **Previous Image** | `Left Arrow` or `Up Arrow` |
@@ -239,7 +240,7 @@ image-annotation-app/
 │   ├── annotation_manager.py  # Annotation CRUD operations
 │   ├── image_manager.py        # Image collection & navigation
 │   ├── label_manager.py        # Label set management
-│   └── export_service.py       # Export to CSV/COCO (Phase 5 - pending)
+│   └── export_service.py       # Export to CSV/COCO
 ├── data/                        # Data layer (I/O and persistence)
 │   ├── image_loader.py         # Image file loading
 │   └── annotation_storage.py   # Annotation persistence
@@ -290,7 +291,7 @@ No changes to core business logic required.
 
 ## Development Status
 
-**Current**: Phase 4 Complete (80% of MVP)
+**Current**: Phase 5 Complete - MVP Ready! 🎉
 
 ### Completed Phases
 
@@ -314,14 +315,18 @@ No changes to core business logic required.
   - Draw/Select mode toggles
   - Bidirectional sync (canvas ↔ list)
 
-### Remaining Phase
-
-- ⏳ **Phase 5**: Export Functionality (Final 20%)
+- ✅ **Phase 5**: Export Functionality
   - CSV export implementation
   - COCO JSON export implementation
+  - Export statistics and validation
   - Integration with export dialog
 
-**Estimated completion**: 5 minutes
+### Future Enhancements
+
+- ⏳ **Phase 6**: Import & Edit (Post-MVP)
+  - Import from CSV/COCO JSON
+  - Edit existing annotation labels
+  - Image-annotation matching strategies
 
 See [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) for detailed design and implementation guide.
 
