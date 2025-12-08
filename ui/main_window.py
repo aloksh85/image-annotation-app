@@ -14,9 +14,10 @@ from PyQt6.QtCore import Qt
 from core.annotation_manager import AnnotationManager
 from core.image_manager import ImageManager
 from core.label_manager import LabelManager
+from core.export_service import ExportService
 from data.image_loader import ImageLoader
 from ui.image_canvas import ImageCanvas
-from ui.dialogs import LabelSetupDialog, LabelSelectionDialog
+from ui.dialogs import LabelSetupDialog, LabelSelectionDialog, ExportDialog
 from ui.annotation_list_widget import AnnotationListWidget
 from ui.toolbar import ToolBar
 
@@ -46,6 +47,7 @@ class MainWindow(QMainWindow):
         self.annotation_manager = AnnotationManager()
         self.image_manager = ImageManager()
         self.label_manager = LabelManager()
+        self.export_service = ExportService()
 
         # Initialize data layer
         self.image_loader = ImageLoader()
@@ -111,6 +113,13 @@ class MainWindow(QMainWindow):
         labels_action = file_menu.addAction("Define Labels")
         labels_action.setShortcut("Ctrl+L")
         labels_action.triggered.connect(self._show_label_setup_dialog)
+
+        file_menu.addSeparator()
+
+        # Export annotations action
+        export_action = file_menu.addAction("Export Annotations")
+        export_action.setShortcut("Ctrl+E")
+        export_action.triggered.connect(self.export_annotations)
 
         file_menu.addSeparator()
 
@@ -404,6 +413,92 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(
             f"Deleted annotation ({len(current_image.annotations)} remaining)"
         )
+
+    def export_annotations(self) -> None:
+        """
+        Export annotations to file.
+
+        Shows export dialog and exports annotations in selected format.
+        """
+        # Check if there are any images loaded
+        if self.image_manager.get_image_count() == 0:
+            QMessageBox.warning(
+                self,
+                "No Images",
+                "Please load images before exporting."
+            )
+            return
+
+        # Get all images
+        images = self.image_manager.get_all_images()
+
+        # Check if there are any annotations
+        total_annotations = sum(len(img.annotations) for img in images)
+        if total_annotations == 0:
+            QMessageBox.warning(
+                self,
+                "No Annotations",
+                "There are no annotations to export."
+            )
+            return
+
+        # Show export dialog
+        dialog = ExportDialog(self)
+        if not dialog.exec():
+            return
+
+        export_format = dialog.get_export_format()
+        if not export_format:
+            return
+
+        # Determine file extension and filter based on format
+        if export_format == "csv":
+            file_filter = "CSV Files (*.csv)"
+            default_ext = ".csv"
+        else:  # coco
+            file_filter = "JSON Files (*.json)"
+            default_ext = ".json"
+
+        # Show file save dialog
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Annotations",
+            f"annotations{default_ext}",
+            file_filter
+        )
+
+        if not file_path:
+            return
+
+        try:
+            # Export using the service
+            if export_format == "csv":
+                self.export_service.export_to_csv(images, file_path)
+            else:  # coco
+                self.export_service.export_to_coco(images, file_path)
+
+            # Get export statistics
+            stats = self.export_service.get_export_stats(images)
+
+            # Show success message
+            QMessageBox.information(
+                self,
+                "Export Successful",
+                f"Exported {stats['total_annotations']} annotations "
+                f"from {stats['total_images']} images.\n\n"
+                f"File saved to:\n{file_path}"
+            )
+
+            self.status_bar.showMessage(
+                f"Exported {stats['total_annotations']} annotations to {file_path}"
+            )
+
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Export Failed",
+                f"Failed to export annotations:\n{str(e)}"
+            )
 
     def closeEvent(self, event):
         """
