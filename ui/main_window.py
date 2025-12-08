@@ -17,6 +17,8 @@ from core.label_manager import LabelManager
 from data.image_loader import ImageLoader
 from ui.image_canvas import ImageCanvas
 from ui.dialogs import LabelSetupDialog, LabelSelectionDialog
+from ui.annotation_list_widget import AnnotationListWidget
+from ui.toolbar import ToolBar
 
 
 class MainWindow(QMainWindow):
@@ -50,6 +52,8 @@ class MainWindow(QMainWindow):
 
         # UI components (will be created in _init_ui)
         self.canvas: ImageCanvas | None = None
+        self.annotation_list: AnnotationListWidget | None = None
+        self.toolbar: ToolBar | None = None
         self.status_bar: QStatusBar | None = None
 
         # Setup UI
@@ -66,16 +70,25 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Image Annotation Tool")
         self.resize(1200, 800)
 
+        # Create toolbar
+        self.toolbar = ToolBar()
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.toolbar)
+
         # Create central widget and layout
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
-        main_layout = QVBoxLayout()
+        # Horizontal layout: canvas (75%) + annotation list (25%)
+        main_layout = QHBoxLayout()
         central_widget.setLayout(main_layout)
 
         # Create image canvas
         self.canvas = ImageCanvas()
-        main_layout.addWidget(self.canvas)
+        main_layout.addWidget(self.canvas, stretch=3)  # 75% width
+
+        # Create annotation list widget
+        self.annotation_list = AnnotationListWidget()
+        main_layout.addWidget(self.annotation_list, stretch=1)  # 25% width
 
         # Create status bar
         self.status_bar = QStatusBar()
@@ -108,10 +121,23 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self) -> None:
         """Connect signals from UI components to handlers."""
+        # Canvas signals
         if self.canvas:
-            # Connect canvas signals
             self.canvas.annotation_created.connect(self._on_annotation_created)
             self.canvas.annotation_selected.connect(self._on_annotation_selected)
+
+        # Toolbar signals
+        if self.toolbar:
+            self.toolbar.next_image_requested.connect(self._next_image)
+            self.toolbar.previous_image_requested.connect(self._previous_image)
+            self.toolbar.mode_changed.connect(self.canvas.set_mode)
+
+        # Annotation list signals
+        if self.annotation_list:
+            self.annotation_list.annotation_deleted.connect(self._on_annotation_deleted_from_list)
+            self.annotation_list.annotation_selected.connect(self._on_annotation_selected)
+            # Bidirectional sync: canvas selection → list selection
+            self.canvas.annotation_selected.connect(self.annotation_list.select_annotation)
 
     def _show_label_setup_dialog(self) -> None:
         """
@@ -206,6 +232,8 @@ class MainWindow(QMainWindow):
 
         if not current_image:
             self.canvas.clear()
+            self.annotation_list.clear()
+            self.toolbar.update_image_counter(0, 0)
             self.status_bar.showMessage("No images loaded")
             return
 
@@ -217,9 +245,15 @@ class MainWindow(QMainWindow):
             self.canvas.set_image(pixmap)
             self.canvas.set_annotations(current_image.annotations)
 
-            # Update status bar
+            # Update annotation list
+            self.annotation_list.set_annotations(current_image.annotations)
+
+            # Update toolbar counter
             current_idx = self.image_manager.get_current_index()
             total = self.image_manager.get_image_count()
+            self.toolbar.update_image_counter(current_idx, total)
+
+            # Update status bar
             self.status_bar.showMessage(
                 f"Image {current_idx + 1}/{total}: {current_image.filename} "
                 f"({len(current_image.annotations)} annotations)"
@@ -270,6 +304,7 @@ class MainWindow(QMainWindow):
 
                     # Refresh display
                     self.canvas.set_annotations(current_image.annotations)
+                    self.annotation_list.set_annotations(current_image.annotations)
 
                     # Update status
                     self.status_bar.showMessage(
@@ -327,7 +362,7 @@ class MainWindow(QMainWindow):
             self._display_current_image()
 
     def _delete_selected_annotation(self) -> None:
-        """Delete the currently selected annotation."""
+        """Delete the currently selected annotation (from keyboard)."""
         if not self.canvas or not self.canvas._selected_annotation_id:
             return
 
@@ -343,6 +378,29 @@ class MainWindow(QMainWindow):
 
         # Refresh display
         self.canvas.set_annotations(current_image.annotations)
+        self.annotation_list.set_annotations(current_image.annotations)
+        self.status_bar.showMessage(
+            f"Deleted annotation ({len(current_image.annotations)} remaining)"
+        )
+
+    def _on_annotation_deleted_from_list(self, annotation_id: str) -> None:
+        """
+        Handle annotation deletion from annotation list widget.
+
+        Args:
+            annotation_id: ID of annotation to delete
+        """
+        current_image = self.image_manager.get_current_image()
+        if not current_image:
+            return
+
+        # Remove from managers
+        current_image.remove_annotation(annotation_id)
+        self.annotation_manager.delete_annotation(annotation_id)
+
+        # Refresh display
+        self.canvas.set_annotations(current_image.annotations)
+        self.annotation_list.set_annotations(current_image.annotations)
         self.status_bar.showMessage(
             f"Deleted annotation ({len(current_image.annotations)} remaining)"
         )

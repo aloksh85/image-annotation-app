@@ -9,6 +9,8 @@ the core business logic intact.
 from ui.main_window import MainWindow
 from ui.image_canvas import ImageCanvas
 from ui.dialogs import LabelSetupDialog, LabelSelectionDialog, ExportDialog
+from ui.annotation_list_widget import AnnotationListWidget
+from ui.toolbar import ToolBar
 
 __all__ = [
     'MainWindow',
@@ -16,4 +18,6 @@ __all__ = [
     'LabelSetupDialog',
     'LabelSelectionDialog',
     'ExportDialog',
+    'AnnotationListWidget',
+    'ToolBar',
 ]
