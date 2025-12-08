@@ -4,13 +4,23 @@ A PyQt6-based desktop application for manual image annotation with clean archite
 
 ## Features
 
-- **Manual Annotation**: Draw rectangular bounding boxes on images
+### Core Functionality
+- **Manual Annotation**: Draw rectangular bounding boxes with two-corner selection
 - **Predefined Label Sets**: Define integer ID and name pairs before annotation
 - **Quick Labeling**: Select labels from dropdown during annotation
-- **Multi-Image Support**: Navigate between multiple images
-- **Export Formats**:
-  - CSV (with label IDs and names)
-  - COCO JSON (industry-standard format)
+- **Multi-Image Support**: Load and navigate between multiple images
+- **Visual Annotation List**: See all annotations for current image in side panel
+- **Interactive Selection**: Click annotations in list or on canvas to select
+
+### Navigation & Controls
+- **Navigation Toolbar**: Previous/Next buttons with image counter
+- **Keyboard Shortcuts**: Arrow keys, Delete, mode toggles (D/S)
+- **Mode Switching**: Toggle between Draw and Select modes
+- **Bidirectional Sync**: Canvas and list selections stay synchronized
+
+### Export Formats (Phase 5 - Coming Soon)
+- **CSV**: Simple tabular format with label IDs and names
+- **COCO JSON**: Industry-standard format for ML training
 
 ## Architecture
 
@@ -49,43 +59,200 @@ pip install -r requirements.txt
 
 ## Usage
 
+### Quick Start
+
 ```bash
+# Activate virtual environment (if using one)
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Run the application
 python app.py
 ```
 
-### Workflow
+---
 
-1. **Define Labels**: On startup, define your label set (e.g., 1: cat, 2: dog, 3: person)
-2. **Load Images**: File → Load Images
-3. **Annotate**:
-   - Draw rectangle with mouse
-   - Select label from dropdown
-4. **Navigate**: Use Previous/Next buttons to move between images
-5. **Export**: File → Export Annotations (choose CSV or COCO JSON)
+## Usage Guide
+
+### First-Time Setup
+
+When you launch the application for the first time, you'll see a **Label Setup Dialog**:
+
+1. **Define Your Label Set**:
+   - Enter an integer ID (e.g., `1`, `2`, `3`)
+   - Enter a label name (e.g., `cat`, `dog`, `person`)
+   - Click **Add Label**
+   - Repeat for all your classes
+   - Click **OK** when done
+
+   > **Note**: You can modify labels anytime via **File → Define Labels**
+
+### Loading Images
+
+1. Click **File → Load Images** (or press `Ctrl+O`)
+2. Select one or more image files (`.jpg`, `.jpeg`, `.png`, `.bmp`, `.gif`)
+3. The first image will display automatically
+
+### Annotating Images
+
+#### Drawing Bounding Boxes
+
+**Method 1: Mouse (Draw Mode - Default)**
+1. Click and hold at one corner of the object
+2. Drag to the opposite corner
+3. Release mouse button
+4. A yellow dashed preview shows while dragging
+5. Select label from the dropdown dialog
+6. Click **OK**
+
+The annotation appears as a green box with the label name.
+
+**Method 2: Keyboard Shortcuts**
+- Press `D` to enter Draw mode
+- Press `S` to enter Select mode
+
+#### Managing Annotations
+
+**Select an Annotation**:
+- **On Canvas**: Click directly on the bounding box (turns red when selected)
+- **In List**: Click the annotation in the right panel
+
+**Delete an Annotation**:
+- Select the annotation, then:
+  - Press `Delete` key, OR
+  - Click the **Delete** button in the annotation list
+
+**Edit Label** (coming in Phase 5):
+- Select annotation → Click **Edit Label** button
+
+### Navigation
+
+**Navigate Between Images**:
+- Click **Previous** (`←`) or **Next** (`→`) buttons in toolbar
+- Use arrow keys: `Left`/`Up` (previous) or `Right`/`Down` (next)
+- Image counter shows current position: **"Image 2/5"**
+
+### Exporting Annotations
+
+1. Click **File → Export Annotations**
+2. Choose export format:
+   - **CSV**: Simple tabular format
+   - **COCO JSON**: Industry-standard format for ML training
+3. Select output file path
+4. Click **OK**
+
+---
+
+## Keyboard Shortcuts
+
+| Action | Shortcut |
+|--------|----------|
+| **Load Images** | `Ctrl+O` |
+| **Define Labels** | `Ctrl+L` |
+| **Exit Application** | `Ctrl+Q` |
+| **Next Image** | `Right Arrow` or `Down Arrow` |
+| **Previous Image** | `Left Arrow` or `Up Arrow` |
+| **Delete Selected Annotation** | `Delete` |
+| **Switch to Draw Mode** | `D` |
+| **Switch to Select Mode** | `S` |
+
+---
+
+## Complete Workflow Example
+
+### Scenario: Annotating a Pet Photo Dataset
+
+1. **Launch Application**
+   ```bash
+   python app.py
+   ```
+
+2. **Define Labels**
+   - Label 1: `cat`
+   - Label 2: `dog`
+   - Label 3: `bird`
+
+3. **Load Images**
+   - File → Load Images
+   - Select all pet photos from your folder
+   - First image displays
+
+4. **Annotate First Image**
+   - Draw box around the cat
+   - Select "1: cat" from dropdown
+   - Annotation appears in green with "cat" label
+
+5. **Navigate and Annotate**
+   - Click **Next** button (or press `→`)
+   - Draw box around the dog
+   - Select "2: dog"
+   - Continue through all images
+
+6. **Review Annotations**
+   - Use Previous/Next to review
+   - Click annotations in the list to highlight them
+   - Delete any mistakes with Delete button
+
+7. **Export Dataset**
+   - File → Export Annotations
+   - Choose **COCO JSON** for ML training
+   - Save as `annotations.json`
+
+8. **Done!** Your dataset is ready for model training.
+
+---
+
+## UI Overview
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ File                                         [Menu Bar] │
+├─────────────────────────────────────────────────────────┤
+│ [← Prev]  Image 2/5  [Next →]  [Draw] [Select] [Toolbar]│
+├──────────────────────────────┬──────────────────────────┤
+│                              │ Annotations (3)          │
+│                              ├──────────────────────────┤
+│                              │ ☑ 1: cat - abc12345      │
+│      Image Canvas            │ ☐ 2: dog - def67890      │
+│   (Draw/View Annotations)    │ ☐ 1: cat - ghi11121      │
+│                              ├──────────────────────────┤
+│                              │ [Edit Label] [Delete]    │
+│                              │                          │
+│                              │  Annotation List Panel   │
+├──────────────────────────────┴──────────────────────────┤
+│ Status: Image 2/5: dog.jpg (3 annotations)              │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Components**:
+- **Menu Bar**: File operations (Load, Export, Define Labels, Exit)
+- **Toolbar**: Navigation buttons and mode toggles
+- **Image Canvas**: Main area for viewing and annotating images
+- **Annotation List**: Shows all annotations for current image
+- **Status Bar**: Displays current image info and feedback
 
 ## Project Structure
 
 ```
-image_annotate/
-├── core/                   # Business logic (framework-agnostic)
-│   ├── models.py          # Data models (BoundingBox, Annotation, ImageMetadata)
-│   ├── annotation_manager.py
-│   ├── image_manager.py
-│   ├── label_manager.py
-│   └── export_service.py
-├── data/                   # Data layer (I/O and persistence)
-│   ├── image_loader.py
-│   └── annotation_storage.py
-├── ui/                     # Presentation layer (PyQt6)
-│   ├── main_window.py
-│   ├── image_canvas.py
-│   ├── annotation_list_widget.py
-│   ├── toolbar.py
-│   └── dialogs.py
-├── utils/                  # Shared utilities
-│   └── constants.py
-├── app.py                  # Entry point
-└── requirements.txt
+image-annotation-app/
+├── core/                        # Business logic (framework-agnostic)
+│   ├── models.py               # Data models (BoundingBox, Annotation, ImageMetadata)
+│   ├── annotation_manager.py  # Annotation CRUD operations
+│   ├── image_manager.py        # Image collection & navigation
+│   ├── label_manager.py        # Label set management
+│   └── export_service.py       # Export to CSV/COCO (Phase 5 - pending)
+├── data/                        # Data layer (I/O and persistence)
+│   ├── image_loader.py         # Image file loading
+│   └── annotation_storage.py   # Annotation persistence
+├── ui/                          # Presentation layer (PyQt6)
+│   ├── main_window.py          # Main application window
+│   ├── image_canvas.py         # Interactive canvas for drawing
+│   ├── annotation_list_widget.py  # Annotation list panel
+│   ├── toolbar.py              # Navigation toolbar
+│   └── dialogs.py              # Label setup, selection, export dialogs
+├── utils/                       # Shared utilities
+│   └── constants.py            # App-wide constants
+├── app.py                       # Application entry point
+└── requirements.txt             # Python dependencies
 ```
 
 ## Export Formats
@@ -123,13 +290,38 @@ No changes to core business logic required.
 
 ## Development Status
 
-**Current**: Phase 3 (60% complete)
-- ✅ Core data models
-- ✅ Business logic layer
-- ✅ Data layer
-- ✅ Label management
-- ✅ Dialogs
-- ⏳ UI components (in progress)
+**Current**: Phase 4 Complete (80% of MVP)
+
+### Completed Phases
+
+- ✅ **Phase 1-2**: Core Architecture
+  - Data models (BoundingBox, Annotation, ImageMetadata)
+  - Business logic layer (AnnotationManager, ImageManager, LabelManager)
+  - Data layer (ImageLoader, AnnotationStorage)
+  - Framework-agnostic design
+
+- ✅ **Phase 3**: Basic UI
+  - Application entry point
+  - Interactive image canvas with drawing
+  - Label setup and selection dialogs
+  - Main window orchestration
+  - Keyboard shortcuts
+
+- ✅ **Phase 4**: Navigation & Management
+  - Annotation list widget with selection/deletion
+  - Navigation toolbar with Previous/Next buttons
+  - Image counter display
+  - Draw/Select mode toggles
+  - Bidirectional sync (canvas ↔ list)
+
+### Remaining Phase
+
+- ⏳ **Phase 5**: Export Functionality (Final 20%)
+  - CSV export implementation
+  - COCO JSON export implementation
+  - Integration with export dialog
+
+**Estimated completion**: 5 minutes
 
 See [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) for detailed design and implementation guide.
 
