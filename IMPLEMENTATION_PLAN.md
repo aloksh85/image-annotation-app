@@ -3096,3 +3096,1385 @@ After Phase 6 and 7:
 - Maintains backward compatibility
 
 Both phases maintain the clean three-layer architecture and add zero dependencies to the core business logic layer.
+
+---
+
+# Phase 8: Auto-Annotation with SAM2 and Grounding DINO
+
+**Goal**: Add ML-powered auto-annotation capabilities using SAM2 (Segment Anything Model 2) and Grounding DINO for automated object detection and segmentation.
+
+**Timeline**: 3-4 hours
+**Priority**: Post-MVP Enhancement
+**Dependencies**: Phase 1-7 complete
+
+---
+
+## Phase 8 Overview
+
+Auto-annotation will allow users to:
+1. **Automatic Object Detection**: Use Grounding DINO to detect objects based on text prompts
+2. **Automatic Segmentation**: Use SAM2 to generate precise masks and bounding boxes
+3. **Semi-Automated Workflow**: AI suggests annotations, user reviews and accepts/rejects
+4. **Batch Processing**: Process multiple images automatically
+5. **Flexible Models**: Switch between SAM2 and Grounding DINO based on use case
+
+### Why SAM2 and Grounding DINO?
+
+**SAM2 (Segment Anything Model 2)**:
+- Zero-shot segmentation (no training needed)
+- Handles any object category
+- Generates precise masks that can be converted to bounding boxes
+- Best for: Generic object segmentation, when you want to detect "everything"
+
+**Grounding DINO**:
+- Open-vocabulary object detection
+- Text-prompt based detection (e.g., "a person", "a red car")
+- Combines DINO detection with grounding capabilities
+- Best for: Specific object detection based on descriptions
+
+---
+
+## Architecture Integration
+
+### Updated Three-Layer Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                  PRESENTATION LAYER                      │
+│  - MainWindow (with Auto-Annotate menu)                 │
+│  - AutoAnnotationDialog (model selection, config)       │
+│  - ReviewSuggestionsDialog (accept/reject UI)           │
+└──────────────────────┬──────────────────────────────────┘
+                       │
+┌──────────────────────▼──────────────────────────────────┐
+│                BUSINESS LOGIC LAYER                      │
+│  - AnnotationManager (with suggest_annotations())       │
+│  - ModelManager (manages SAM2/DINO instances)           │
+│  - AutoAnnotationService (orchestrates inference)       │
+└──────────────────────┬──────────────────────────────────┘
+                       │
+┌──────────────────────▼──────────────────────────────────┐
+│                   MODEL LAYER (NEW)                      │
+│  - SAM2Wrapper (wraps SAM2 model)                       │
+│  - GroundingDINOWrapper (wraps Grounding DINO)          │
+│  - ModelConfig (model parameters)                        │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Design Principles for Phase 8
+
+1. **Optional Dependency**: ML models are optional; app works without them
+2. **Lazy Loading**: Models loaded only when needed (memory efficient)
+3. **Framework-Agnostic Core**: Model wrappers are separate from business logic
+4. **Graceful Degradation**: App shows helpful message if models unavailable
+5. **User Control**: All suggestions require user approval
+
+---
+
+## Component Design
+
+### 1. Model Layer (New)
+
+#### models/model_config.py
+
+```python
+"""
+Model configuration for auto-annotation.
+
+This module defines configuration for SAM2 and Grounding DINO models.
+"""
+
+from dataclasses import dataclass
+from enum import Enum
+from typing import Optional
+
+
+class ModelType(Enum):
+    """Available model types for auto-annotation."""
+    SAM2 = "sam2"
+    GROUNDING_DINO = "grounding_dino"
+
+
+@dataclass
+class ModelConfig:
+    """
+    Configuration for ML models.
+
+    Attributes:
+        model_type: Type of model (SAM2 or Grounding DINO)
+        checkpoint_path: Path to model checkpoint file
+        config_path: Optional path to model config file
+        device: Device to run inference on ('cuda' or 'cpu')
+        confidence_threshold: Minimum confidence for detections (0.0-1.0)
+    """
+    model_type: ModelType
+    checkpoint_path: str
+    config_path: Optional[str] = None
+    device: str = "cuda"
+    confidence_threshold: float = 0.3
+
+    def validate(self) -> tuple[bool, str]:
+        """
+        Validate configuration.
+
+        Returns:
+            Tuple of (is_valid, error_message)
+        """
+        if not self.checkpoint_path:
+            return False, "Checkpoint path is required"
+
+        if self.confidence_threshold < 0.0 or self.confidence_threshold > 1.0:
+            return False, "Confidence threshold must be between 0.0 and 1.0"
+
+        if self.device not in ["cuda", "cpu"]:
+            return False, "Device must be 'cuda' or 'cpu'"
+
+        return True, ""
+
+
+@dataclass
+class SAM2Config(ModelConfig):
+    """
+    SAM2-specific configuration.
+
+    Attributes:
+        points_per_side: Number of points per side for automatic mask generation
+        pred_iou_thresh: IoU threshold for mask quality filtering
+        stability_score_thresh: Stability score threshold for filtering
+    """
+    points_per_side: int = 32
+    pred_iou_thresh: float = 0.88
+    stability_score_thresh: float = 0.95
+
+    def __post_init__(self):
+        self.model_type = ModelType.SAM2
+
+
+@dataclass
+class GroundingDINOConfig(ModelConfig):
+    """
+    Grounding DINO-specific configuration.
+
+    Attributes:
+        text_prompt: Text prompt for object detection (e.g., "person . car . dog")
+        box_threshold: Threshold for bounding box confidence
+        text_threshold: Threshold for text similarity
+    """
+    text_prompt: str = ""
+    box_threshold: float = 0.35
+    text_threshold: float = 0.25
+
+    def __post_init__(self):
+        self.model_type = ModelType.GROUNDING_DINO
+```
+
+#### models/sam2_wrapper.py
+
+```python
+"""
+SAM2 model wrapper for auto-annotation.
+
+This module provides a clean interface to SAM2 model for generating
+segmentation masks and bounding boxes.
+"""
+
+from typing import Optional, List
+import numpy as np
+from pathlib import Path
+
+from core.models import Annotation, BoundingBox, ImageMetadata
+from models.model_config import SAM2Config
+
+
+class SAM2Wrapper:
+    """
+    Wrapper for SAM2 (Segment Anything Model 2).
+
+    Provides methods to:
+    - Load SAM2 model
+    - Generate automatic masks for an image
+    - Convert masks to bounding boxes
+    - Create Annotation objects
+
+    Example:
+        >>> config = SAM2Config(checkpoint_path="sam2_checkpoint.pth")
+        >>> sam2 = SAM2Wrapper(config)
+        >>> annotations = sam2.generate_annotations(image_array, image_id=1)
+    """
+
+    def __init__(self, config: SAM2Config):
+        """
+        Initialize SAM2 wrapper.
+
+        Args:
+            config: SAM2Config object with model parameters
+
+        Raises:
+            ImportError: If SAM2 dependencies not installed
+            FileNotFoundError: If checkpoint not found
+        """
+        self.config = config
+        self.model = None
+        self._check_dependencies()
+        self._load_model()
+
+    def _check_dependencies(self) -> None:
+        """
+        Check if SAM2 dependencies are installed.
+
+        Raises:
+            ImportError: If required packages not available
+        """
+        try:
+            import torch
+            import segment_anything_2 as sam2
+        except ImportError as e:
+            raise ImportError(
+                "SAM2 dependencies not installed. "
+                "Install with: pip install segment-anything-2 torch torchvision"
+            ) from e
+
+    def _load_model(self) -> None:
+        """
+        Load SAM2 model from checkpoint.
+
+        Raises:
+            FileNotFoundError: If checkpoint file doesn't exist
+            RuntimeError: If model loading fails
+        """
+        import torch
+        from segment_anything_2 import sam_model_registry, SamAutomaticMaskGenerator
+
+        checkpoint_path = Path(self.config.checkpoint_path)
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(
+                f"SAM2 checkpoint not found: {checkpoint_path}"
+            )
+
+        try:
+            # Determine model size from checkpoint name
+            # e.g., sam2_hiera_large.pt -> hiera_l
+            model_type = self._infer_model_type(checkpoint_path.name)
+
+            sam = sam_model_registry[model_type](checkpoint=str(checkpoint_path))
+            sam.to(device=self.config.device)
+
+            # Create automatic mask generator
+            self.mask_generator = SamAutomaticMaskGenerator(
+                model=sam,
+                points_per_side=self.config.points_per_side,
+                pred_iou_thresh=self.config.pred_iou_thresh,
+                stability_score_thresh=self.config.stability_score_thresh,
+            )
+
+            self.model = sam
+            print(f"SAM2 model loaded successfully on {self.config.device}")
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to load SAM2 model: {str(e)}") from e
+
+    def _infer_model_type(self, checkpoint_name: str) -> str:
+        """
+        Infer SAM2 model type from checkpoint filename.
+
+        Args:
+            checkpoint_name: Name of checkpoint file
+
+        Returns:
+            Model type string (e.g., "hiera_l", "hiera_b")
+        """
+        name_lower = checkpoint_name.lower()
+
+        if "large" in name_lower or "_l" in name_lower:
+            return "hiera_l"
+        elif "base" in name_lower or "_b" in name_lower:
+            return "hiera_b"
+        elif "small" in name_lower or "_s" in name_lower:
+            return "hiera_s"
+        elif "tiny" in name_lower or "_t" in name_lower:
+            return "hiera_t"
+        else:
+            # Default to large
+            return "hiera_l"
+
+    def generate_annotations(
+        self,
+        image: np.ndarray,
+        image_id: str,
+        label_id: int = 1,
+        label_name: str = "object"
+    ) -> List[Annotation]:
+        """
+        Generate annotations for an image using SAM2.
+
+        Args:
+            image: Image as numpy array (H, W, 3) in RGB format
+            image_id: ID of the image being annotated
+            label_id: Label ID to assign to all detections
+            label_name: Label name to assign to all detections
+
+        Returns:
+            List of Annotation objects with bounding boxes
+
+        Raises:
+            RuntimeError: If model not loaded or inference fails
+        """
+        if self.model is None:
+            raise RuntimeError("SAM2 model not loaded")
+
+        try:
+            # Generate masks
+            masks = self.mask_generator.generate(image)
+
+            # Convert masks to annotations
+            annotations = []
+            for mask_data in masks:
+                # Extract bounding box from mask
+                bbox = mask_data['bbox']  # [x, y, width, height]
+
+                # Filter by confidence (predicted_iou)
+                if mask_data['predicted_iou'] < self.config.confidence_threshold:
+                    continue
+
+                # Create BoundingBox
+                bounding_box = BoundingBox(
+                    x=int(bbox[0]),
+                    y=int(bbox[1]),
+                    width=int(bbox[2]),
+                    height=int(bbox[3])
+                )
+
+                # Create Annotation
+                annotation = Annotation(
+                    bounding_box=bounding_box,
+                    label_id=label_id,
+                    label_name=label_name,
+                    image_id=image_id
+                )
+
+                annotations.append(annotation)
+
+            return annotations
+
+        except Exception as e:
+            raise RuntimeError(f"SAM2 inference failed: {str(e)}") from e
+
+    def unload_model(self) -> None:
+        """Unload model to free memory."""
+        if self.model is not None:
+            del self.model
+            del self.mask_generator
+            self.model = None
+
+            # Clear CUDA cache if using GPU
+            if self.config.device == "cuda":
+                import torch
+                torch.cuda.empty_cache()
+
+            print("SAM2 model unloaded")
+```
+
+#### models/grounding_dino_wrapper.py
+
+```python
+"""
+Grounding DINO model wrapper for auto-annotation.
+
+This module provides a clean interface to Grounding DINO model for
+text-prompt based object detection.
+"""
+
+from typing import List
+import numpy as np
+from pathlib import Path
+
+from core.models import Annotation, BoundingBox
+from models.model_config import GroundingDINOConfig
+
+
+class GroundingDINOWrapper:
+    """
+    Wrapper for Grounding DINO model.
+
+    Provides methods to:
+    - Load Grounding DINO model
+    - Detect objects based on text prompts
+    - Convert detections to Annotation objects
+
+    Example:
+        >>> config = GroundingDINOConfig(
+        ...     checkpoint_path="gdino.pth",
+        ...     config_path="gdino_config.py",
+        ...     text_prompt="person . car . dog"
+        ... )
+        >>> dino = GroundingDINOWrapper(config)
+        >>> annotations = dino.detect_objects(image_array, image_id=1)
+    """
+
+    def __init__(self, config: GroundingDINOConfig):
+        """
+        Initialize Grounding DINO wrapper.
+
+        Args:
+            config: GroundingDINOConfig object with model parameters
+
+        Raises:
+            ImportError: If Grounding DINO dependencies not installed
+            FileNotFoundError: If checkpoint or config not found
+        """
+        self.config = config
+        self.model = None
+        self._check_dependencies()
+        self._load_model()
+
+    def _check_dependencies(self) -> None:
+        """
+        Check if Grounding DINO dependencies are installed.
+
+        Raises:
+            ImportError: If required packages not available
+        """
+        try:
+            import torch
+            import groundingdino
+        except ImportError as e:
+            raise ImportError(
+                "Grounding DINO dependencies not installed. "
+                "Install with: pip install groundingdino-py torch torchvision"
+            ) from e
+
+    def _load_model(self) -> None:
+        """
+        Load Grounding DINO model from checkpoint.
+
+        Raises:
+            FileNotFoundError: If checkpoint or config file doesn't exist
+            RuntimeError: If model loading fails
+        """
+        import torch
+        from groundingdino.util.inference import load_model
+
+        checkpoint_path = Path(self.config.checkpoint_path)
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(
+                f"Grounding DINO checkpoint not found: {checkpoint_path}"
+            )
+
+        if self.config.config_path:
+            config_path = Path(self.config.config_path)
+            if not config_path.exists():
+                raise FileNotFoundError(
+                    f"Grounding DINO config not found: {config_path}"
+                )
+        else:
+            raise ValueError("Grounding DINO requires config_path")
+
+        try:
+            self.model = load_model(
+                model_config_path=str(self.config.config_path),
+                model_checkpoint_path=str(self.config.checkpoint_path),
+                device=self.config.device
+            )
+
+            print(f"Grounding DINO model loaded successfully on {self.config.device}")
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to load Grounding DINO model: {str(e)}") from e
+
+    def detect_objects(
+        self,
+        image: np.ndarray,
+        image_id: str,
+        text_prompt: Optional[str] = None,
+        label_map: Optional[dict[str, tuple[int, str]]] = None
+    ) -> List[Annotation]:
+        """
+        Detect objects in image using text prompt.
+
+        Args:
+            image: Image as numpy array (H, W, 3) in RGB format
+            image_id: ID of the image being annotated
+            text_prompt: Text prompt (e.g., "person . car . dog").
+                        If None, uses config.text_prompt
+            label_map: Optional mapping from prompt phrases to (label_id, label_name).
+                      E.g., {"person": (1, "person"), "car": (2, "car")}
+
+        Returns:
+            List of Annotation objects with bounding boxes
+
+        Raises:
+            RuntimeError: If model not loaded or inference fails
+            ValueError: If text_prompt is empty
+        """
+        if self.model is None:
+            raise RuntimeError("Grounding DINO model not loaded")
+
+        # Use provided text prompt or config default
+        prompt = text_prompt if text_prompt else self.config.text_prompt
+        if not prompt:
+            raise ValueError("Text prompt cannot be empty")
+
+        try:
+            from groundingdino.util.inference import predict
+
+            # Run inference
+            boxes, logits, phrases = predict(
+                model=self.model,
+                image=image,
+                caption=prompt,
+                box_threshold=self.config.box_threshold,
+                text_threshold=self.config.text_threshold,
+                device=self.config.device
+            )
+
+            # Convert to annotations
+            annotations = []
+            h, w = image.shape[:2]
+
+            for box, logit, phrase in zip(boxes, logits, phrases):
+                # Filter by confidence
+                if logit < self.config.confidence_threshold:
+                    continue
+
+                # Convert normalized box to pixel coordinates
+                # box format: [cx_norm, cy_norm, w_norm, h_norm]
+                cx, cy, box_w, box_h = box
+                x = int((cx - box_w / 2) * w)
+                y = int((cy - box_h / 2) * h)
+                width = int(box_w * w)
+                height = int(box_h * h)
+
+                # Determine label from phrase
+                if label_map and phrase in label_map:
+                    label_id, label_name = label_map[phrase]
+                else:
+                    # Default: use phrase as label name, generate ID from hash
+                    label_id = hash(phrase) % 1000
+                    label_name = phrase
+
+                # Create BoundingBox
+                bounding_box = BoundingBox(
+                    x=max(0, x),
+                    y=max(0, y),
+                    width=width,
+                    height=height
+                )
+
+                # Create Annotation
+                annotation = Annotation(
+                    bounding_box=bounding_box,
+                    label_id=label_id,
+                    label_name=label_name,
+                    image_id=image_id
+                )
+
+                annotations.append(annotation)
+
+            return annotations
+
+        except Exception as e:
+            raise RuntimeError(f"Grounding DINO inference failed: {str(e)}") from e
+
+    def unload_model(self) -> None:
+        """Unload model to free memory."""
+        if self.model is not None:
+            del self.model
+            self.model = None
+
+            # Clear CUDA cache if using GPU
+            if self.config.device == "cuda":
+                import torch
+                torch.cuda.empty_cache()
+
+            print("Grounding DINO model unloaded")
+```
+
+### 2. Business Logic Layer Updates
+
+#### core/auto_annotation_service.py (NEW)
+
+```python
+"""
+Auto-annotation service for ML-powered annotation suggestions.
+
+This module orchestrates the auto-annotation workflow, managing model
+inference and annotation suggestion generation.
+"""
+
+from typing import List, Optional
+import numpy as np
+from pathlib import Path
+
+from core.models import Annotation, ImageMetadata
+from models.model_config import ModelType, SAM2Config, GroundingDINOConfig
+from models.sam2_wrapper import SAM2Wrapper
+from models.grounding_dino_wrapper import GroundingDINOWrapper
+
+
+class AutoAnnotationService:
+    """
+    Service for managing auto-annotation with ML models.
+
+    This class is framework-agnostic and handles:
+    - Model initialization and lifecycle
+    - Inference orchestration
+    - Suggestion generation
+
+    Example:
+        >>> service = AutoAnnotationService()
+        >>> sam2_config = SAM2Config(checkpoint_path="sam2.pth")
+        >>> service.load_model(sam2_config)
+        >>> suggestions = service.generate_suggestions(image_array, "img_1")
+    """
+
+    def __init__(self):
+        """Initialize the auto-annotation service."""
+        self.current_model = None
+        self.current_model_type = None
+
+    def is_model_loaded(self) -> bool:
+        """Check if a model is currently loaded."""
+        return self.current_model is not None
+
+    def get_loaded_model_type(self) -> Optional[ModelType]:
+        """Get the type of currently loaded model."""
+        return self.current_model_type
+
+    def load_model(self, config) -> None:
+        """
+        Load a model for auto-annotation.
+
+        Args:
+            config: SAM2Config or GroundingDINOConfig object
+
+        Raises:
+            ValueError: If config is invalid
+            ImportError: If model dependencies not installed
+            FileNotFoundError: If model files not found
+        """
+        # Validate config
+        is_valid, error_msg = config.validate()
+        if not is_valid:
+            raise ValueError(f"Invalid config: {error_msg}")
+
+        # Unload existing model if any
+        if self.current_model is not None:
+            self.unload_model()
+
+        # Load appropriate model
+        if isinstance(config, SAM2Config):
+            self.current_model = SAM2Wrapper(config)
+            self.current_model_type = ModelType.SAM2
+        elif isinstance(config, GroundingDINOConfig):
+            self.current_model = GroundingDINOWrapper(config)
+            self.current_model_type = ModelType.GROUNDING_DINO
+        else:
+            raise ValueError(f"Unknown config type: {type(config)}")
+
+    def unload_model(self) -> None:
+        """Unload the currently loaded model to free memory."""
+        if self.current_model is not None:
+            self.current_model.unload_model()
+            self.current_model = None
+            self.current_model_type = None
+
+    def generate_suggestions(
+        self,
+        image: np.ndarray,
+        image_id: str,
+        label_id: int = 1,
+        label_name: str = "object",
+        **kwargs
+    ) -> List[Annotation]:
+        """
+        Generate annotation suggestions for an image.
+
+        Args:
+            image: Image as numpy array (H, W, 3) in RGB format
+            image_id: ID of the image being annotated
+            label_id: Default label ID (for SAM2)
+            label_name: Default label name (for SAM2)
+            **kwargs: Additional model-specific parameters
+
+        Returns:
+            List of suggested Annotation objects
+
+        Raises:
+            RuntimeError: If no model is loaded
+        """
+        if self.current_model is None:
+            raise RuntimeError("No model loaded. Call load_model() first.")
+
+        if self.current_model_type == ModelType.SAM2:
+            return self.current_model.generate_annotations(
+                image=image,
+                image_id=image_id,
+                label_id=label_id,
+                label_name=label_name
+            )
+
+        elif self.current_model_type == ModelType.GROUNDING_DINO:
+            text_prompt = kwargs.get('text_prompt')
+            label_map = kwargs.get('label_map')
+            return self.current_model.detect_objects(
+                image=image,
+                image_id=image_id,
+                text_prompt=text_prompt,
+                label_map=label_map
+            )
+
+        else:
+            raise RuntimeError(f"Unknown model type: {self.current_model_type}")
+
+    def batch_generate_suggestions(
+        self,
+        images: List[ImageMetadata],
+        image_loader,
+        **kwargs
+    ) -> dict[str, List[Annotation]]:
+        """
+        Generate suggestions for multiple images.
+
+        Args:
+            images: List of ImageMetadata objects
+            image_loader: ImageLoader instance for loading images
+            **kwargs: Additional parameters for generate_suggestions()
+
+        Returns:
+            Dictionary mapping {image_id: [Annotation, ...]}
+
+        Raises:
+            RuntimeError: If no model is loaded
+        """
+        if self.current_model is None:
+            raise RuntimeError("No model loaded. Call load_model() first.")
+
+        suggestions_map = {}
+
+        for img_metadata in images:
+            try:
+                # Load image
+                from PIL import Image
+                pil_image = Image.open(img_metadata.file_path).convert('RGB')
+                image_array = np.array(pil_image)
+
+                # Generate suggestions
+                suggestions = self.generate_suggestions(
+                    image=image_array,
+                    image_id=img_metadata.id,
+                    **kwargs
+                )
+
+                suggestions_map[img_metadata.id] = suggestions
+
+            except Exception as e:
+                print(f"Warning: Failed to process {img_metadata.filename}: {e}")
+                suggestions_map[img_metadata.id] = []
+
+        return suggestions_map
+```
+
+#### Update core/annotation_manager.py
+
+```python
+def suggest_annotations(
+    self,
+    image_id: str,
+    model_name: str = 'sam2'
+) -> list[Annotation]:
+    """
+    Generate automatic annotation suggestions using ML models.
+
+    This method is now implemented in Phase 8 and delegates to
+    AutoAnnotationService for actual inference.
+
+    Args:
+        image_id: ID of image to annotate
+        model_name: Model to use ('sam2' or 'dino')
+
+    Returns:
+        List of suggested Annotation objects
+
+    Note:
+        This is a simplified interface. For full control,
+        use AutoAnnotationService directly.
+    """
+    # This method remains as integration point
+    # Actual implementation is in AutoAnnotationService
+    # UI layer will use AutoAnnotationService directly
+    return []
+```
+
+### 3. UI Layer Updates
+
+#### ui/dialogs.py - Add AutoAnnotationDialog
+
+```python
+class AutoAnnotationDialog(QDialog):
+    """
+    Dialog for configuring auto-annotation settings.
+
+    Allows user to:
+    - Select model type (SAM2 or Grounding DINO)
+    - Configure model parameters
+    - Select checkpoint files
+    - Set confidence thresholds
+
+    Example:
+        >>> dialog = AutoAnnotationDialog()
+        >>> if dialog.exec():
+        >>>     config = dialog.get_config()  # ModelConfig object
+    """
+
+    def __init__(self, parent=None):
+        """Initialize the auto-annotation configuration dialog."""
+        super().__init__(parent)
+        self.setWindowTitle("Auto-Annotation Settings")
+        self.resize(600, 500)
+
+        layout = QVBoxLayout()
+
+        # Model type selection
+        layout.addWidget(QLabel("Select Model:"))
+        self.model_combo = QComboBox()
+        self.model_combo.addItem("SAM2 (Segment Anything Model 2)", "sam2")
+        self.model_combo.addItem("Grounding DINO (Text-Prompted Detection)", "dino")
+        self.model_combo.currentIndexChanged.connect(self._on_model_changed)
+        layout.addWidget(self.model_combo)
+
+        # Checkpoint path
+        checkpoint_layout = QHBoxLayout()
+        self.checkpoint_input = QLineEdit()
+        self.checkpoint_input.setPlaceholderText("Path to model checkpoint...")
+        checkpoint_browse = QPushButton("Browse...")
+        checkpoint_browse.clicked.connect(self._browse_checkpoint)
+        checkpoint_layout.addWidget(QLabel("Checkpoint:"))
+        checkpoint_layout.addWidget(self.checkpoint_input, stretch=1)
+        checkpoint_layout.addWidget(checkpoint_browse)
+        layout.addLayout(checkpoint_layout)
+
+        # Config path (for Grounding DINO)
+        self.config_layout = QHBoxLayout()
+        self.config_input = QLineEdit()
+        self.config_input.setPlaceholderText("Path to model config...")
+        config_browse = QPushButton("Browse...")
+        config_browse.clicked.connect(self._browse_config)
+        self.config_layout.addWidget(QLabel("Config:"))
+        self.config_layout.addWidget(self.config_input, stretch=1)
+        self.config_layout.addWidget(config_browse)
+        layout.addLayout(self.config_layout)
+
+        # Device selection
+        device_layout = QHBoxLayout()
+        device_layout.addWidget(QLabel("Device:"))
+        self.device_combo = QComboBox()
+        self.device_combo.addItem("CUDA (GPU)", "cuda")
+        self.device_combo.addItem("CPU", "cpu")
+        device_layout.addWidget(self.device_combo)
+        device_layout.addStretch()
+        layout.addLayout(device_layout)
+
+        # Confidence threshold
+        threshold_layout = QHBoxLayout()
+        threshold_layout.addWidget(QLabel("Confidence Threshold:"))
+        self.threshold_spin = QDoubleSpinBox()
+        self.threshold_spin.setRange(0.0, 1.0)
+        self.threshold_spin.setSingleStep(0.05)
+        self.threshold_spin.setValue(0.3)
+        threshold_layout.addWidget(self.threshold_spin)
+        threshold_layout.addStretch()
+        layout.addLayout(threshold_layout)
+
+        # Model-specific settings stack
+        self.settings_stack = QStackedWidget()
+
+        # SAM2 settings
+        sam2_widget = QWidget()
+        sam2_layout = QVBoxLayout()
+        sam2_layout.addWidget(QLabel("SAM2 will detect all objects in the image"))
+        sam2_layout.addWidget(QLabel("Assign detected objects to label:"))
+        self.sam2_label_combo = QComboBox()
+        sam2_layout.addWidget(self.sam2_label_combo)
+        sam2_widget.setLayout(sam2_layout)
+
+        # Grounding DINO settings
+        dino_widget = QWidget()
+        dino_layout = QVBoxLayout()
+        dino_layout.addWidget(QLabel("Enter detection prompt (separate classes with ' . '):"))
+        self.dino_prompt_input = QLineEdit()
+        self.dino_prompt_input.setPlaceholderText("e.g., person . car . dog")
+        dino_layout.addWidget(self.dino_prompt_input)
+        dino_layout.addWidget(QLabel("Labels will be matched automatically from prompt"))
+        dino_widget.setLayout(dino_layout)
+
+        self.settings_stack.addWidget(sam2_widget)  # Index 0
+        self.settings_stack.addWidget(dino_widget)  # Index 1
+
+        layout.addWidget(self.settings_stack)
+
+        # Buttons
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._validate_and_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.setLayout(layout)
+
+        # Initialize
+        self._on_model_changed(0)
+
+    def set_labels(self, label_manager):
+        """Populate label dropdown with available labels."""
+        self.label_manager = label_manager
+        labels = label_manager.get_all_labels()
+
+        self.sam2_label_combo.clear()
+        for label_id, label_name in sorted(labels.items()):
+            self.sam2_label_combo.addItem(f"{label_id}: {label_name}", label_id)
+
+    def _on_model_changed(self, index):
+        """Handle model selection change."""
+        model_type = self.model_combo.currentData()
+
+        if model_type == "sam2":
+            self.settings_stack.setCurrentIndex(0)
+            # Hide config path for SAM2
+            for i in range(self.config_layout.count()):
+                widget = self.config_layout.itemAt(i).widget()
+                if widget:
+                    widget.setVisible(False)
+        else:  # dino
+            self.settings_stack.setCurrentIndex(1)
+            # Show config path for Grounding DINO
+            for i in range(self.config_layout.count()):
+                widget = self.config_layout.itemAt(i).widget()
+                if widget:
+                    widget.setVisible(True)
+
+    def _browse_checkpoint(self):
+        """Browse for checkpoint file."""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Model Checkpoint",
+            "",
+            "Model Files (*.pth *.pt *.ckpt);;All Files (*)"
+        )
+        if path:
+            self.checkpoint_input.setText(path)
+
+    def _browse_config(self):
+        """Browse for config file."""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Model Config",
+            "",
+            "Python Files (*.py);;All Files (*)"
+        )
+        if path:
+            self.config_input.setText(path)
+
+    def _validate_and_accept(self):
+        """Validate settings before accepting."""
+        checkpoint = self.checkpoint_input.text().strip()
+        if not checkpoint:
+            QMessageBox.warning(self, "Missing Checkpoint",
+                              "Please select a model checkpoint file")
+            return
+
+        model_type = self.model_combo.currentData()
+        if model_type == "dino":
+            config_path = self.config_input.text().strip()
+            if not config_path:
+                QMessageBox.warning(self, "Missing Config",
+                                  "Grounding DINO requires a config file")
+                return
+
+            prompt = self.dino_prompt_input.text().strip()
+            if not prompt:
+                QMessageBox.warning(self, "Missing Prompt",
+                                  "Please enter a detection prompt")
+                return
+
+        self.accept()
+
+    def get_config(self):
+        """
+        Get the configured ModelConfig object.
+
+        Returns:
+            SAM2Config or GroundingDINOConfig based on selection
+        """
+        from models.model_config import SAM2Config, GroundingDINOConfig
+
+        model_type = self.model_combo.currentData()
+        checkpoint = self.checkpoint_input.text().strip()
+        device = self.device_combo.currentData()
+        threshold = self.threshold_spin.value()
+
+        if model_type == "sam2":
+            label_id = self.sam2_label_combo.currentData()
+            label_text = self.sam2_label_combo.currentText()
+            label_name = label_text.split(': ', 1)[1] if ': ' in label_text else label_text
+
+            config = SAM2Config(
+                checkpoint_path=checkpoint,
+                device=device,
+                confidence_threshold=threshold
+            )
+            # Store label info for later use
+            config.default_label_id = label_id
+            config.default_label_name = label_name
+            return config
+
+        else:  # dino
+            config_path = self.config_input.text().strip()
+            prompt = self.dino_prompt_input.text().strip()
+
+            return GroundingDINOConfig(
+                checkpoint_path=checkpoint,
+                config_path=config_path,
+                device=device,
+                confidence_threshold=threshold,
+                text_prompt=prompt
+            )
+```
+
+#### ui/main_window.py Updates
+
+Add to MainWindow class:
+
+```python
+def __init__(self):
+    # ... existing code ...
+
+    # Initialize auto-annotation service
+    self.auto_annotation_service = None
+    try:
+        from core.auto_annotation_service import AutoAnnotationService
+        self.auto_annotation_service = AutoAnnotationService()
+    except ImportError:
+        print("Auto-annotation dependencies not available")
+
+def _create_menus(self):
+    # ... existing code ...
+
+    # Auto-Annotation menu
+    auto_menu = self.menuBar().addMenu("Auto-Annotate")
+
+    configure_action = auto_menu.addAction("Configure Model...")
+    configure_action.setShortcut("Ctrl+M")
+    configure_action.triggered.connect(self.configure_auto_annotation)
+
+    run_current_action = auto_menu.addAction("Run on Current Image")
+    run_current_action.setShortcut("Ctrl+R")
+    run_current_action.triggered.connect(self.run_auto_annotation_current)
+
+    run_all_action = auto_menu.addAction("Run on All Images...")
+    run_all_action.triggered.connect(self.run_auto_annotation_batch)
+
+    auto_menu.addSeparator()
+
+    unload_action = auto_menu.addAction("Unload Model")
+    unload_action.triggered.connect(self.unload_model)
+
+def configure_auto_annotation(self):
+    """Configure auto-annotation model."""
+    if self.auto_annotation_service is None:
+        QMessageBox.warning(
+            self,
+            "Not Available",
+            "Auto-annotation requires additional dependencies.\n\n"
+            "Install with:\n"
+            "pip install segment-anything-2 groundingdino-py torch torchvision"
+        )
+        return
+
+    from ui.dialogs import AutoAnnotationDialog
+
+    dialog = AutoAnnotationDialog(self)
+    dialog.set_labels(self.label_manager)
+
+    if dialog.exec():
+        config = dialog.get_config()
+
+        try:
+            self.status_bar.showMessage("Loading model...")
+            QApplication.processEvents()  # Update UI
+
+            self.auto_annotation_service.load_model(config)
+
+            model_type = self.auto_annotation_service.get_loaded_model_type()
+            QMessageBox.information(
+                self,
+                "Model Loaded",
+                f"{model_type.value.upper()} model loaded successfully!\n\n"
+                "You can now run auto-annotation on images."
+            )
+            self.status_bar.showMessage(f"{model_type.value.upper()} model ready")
+
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Model Load Failed",
+                f"Failed to load model:\n{str(e)}"
+            )
+            self.status_bar.showMessage("Model load failed")
+
+def run_auto_annotation_current(self):
+    """Run auto-annotation on current image."""
+    if self.auto_annotation_service is None or not self.auto_annotation_service.is_model_loaded():
+        QMessageBox.warning(
+            self,
+            "No Model Loaded",
+            "Please configure and load a model first.\n\n"
+            "Use Auto-Annotate → Configure Model..."
+        )
+        return
+
+    current_image = self.image_manager.get_current_image()
+    if not current_image:
+        QMessageBox.warning(self, "No Image", "Please load an image first")
+        return
+
+    try:
+        # Load image as numpy array
+        from PIL import Image
+        import numpy as np
+
+        self.status_bar.showMessage("Running auto-annotation...")
+        QApplication.processEvents()
+
+        pil_image = Image.open(current_image.file_path).convert('RGB')
+        image_array = np.array(pil_image)
+
+        # Generate suggestions
+        model_type = self.auto_annotation_service.get_loaded_model_type()
+
+        if model_type == ModelType.SAM2:
+            # Get default label from config
+            config = self.auto_annotation_service.current_model.config
+            suggestions = self.auto_annotation_service.generate_suggestions(
+                image=image_array,
+                image_id=current_image.id,
+                label_id=getattr(config, 'default_label_id', 1),
+                label_name=getattr(config, 'default_label_name', 'object')
+            )
+        else:  # Grounding DINO
+            # Build label map from current labels
+            labels = self.label_manager.get_all_labels()
+            label_map = {name: (lid, name) for lid, name in labels.items()}
+
+            suggestions = self.auto_annotation_service.generate_suggestions(
+                image=image_array,
+                image_id=current_image.id,
+                label_map=label_map
+            )
+
+        if not suggestions:
+            QMessageBox.information(
+                self,
+                "No Detections",
+                "No objects detected in the current image.\n\n"
+                "Try adjusting the confidence threshold or using a different model."
+            )
+            self.status_bar.showMessage("No detections")
+            return
+
+        # Add suggestions to current image
+        for suggestion in suggestions:
+            current_image.add_annotation(suggestion)
+            self.annotation_manager._annotations[suggestion.id] = suggestion
+
+        # Refresh display
+        self.canvas.set_annotations(current_image.annotations)
+        self.annotation_list.set_annotations(current_image.annotations)
+
+        self.status_bar.showMessage(
+            f"Added {len(suggestions)} auto-annotations"
+        )
+
+        QMessageBox.information(
+            self,
+            "Auto-Annotation Complete",
+            f"Added {len(suggestions)} annotation(s) to current image.\n\n"
+            "Review and adjust as needed."
+        )
+
+    except Exception as e:
+        QMessageBox.critical(
+            self,
+            "Auto-Annotation Failed",
+            f"Failed to run auto-annotation:\n{str(e)}"
+        )
+        self.status_bar.showMessage("Auto-annotation failed")
+
+def run_auto_annotation_batch(self):
+    """Run auto-annotation on all images."""
+    if self.auto_annotation_service is None or not self.auto_annotation_service.is_model_loaded():
+        QMessageBox.warning(
+            self,
+            "No Model Loaded",
+            "Please configure and load a model first"
+        )
+        return
+
+    all_images = self.image_manager.get_all_images()
+    if not all_images:
+        QMessageBox.warning(self, "No Images", "Please load images first")
+        return
+
+    # Confirm batch processing
+    reply = QMessageBox.question(
+        self,
+        "Batch Auto-Annotation",
+        f"Run auto-annotation on all {len(all_images)} images?\n\n"
+        "This may take several minutes depending on the number of images.",
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.No
+    )
+
+    if reply == QMessageBox.StandardButton.No:
+        return
+
+    try:
+        # TODO: Show progress dialog
+        self.status_bar.showMessage("Running batch auto-annotation...")
+        QApplication.processEvents()
+
+        # Batch process
+        # (Implementation would include progress dialog)
+        # ...
+
+    except Exception as e:
+        QMessageBox.critical(self, "Batch Failed", str(e))
+
+def unload_model(self):
+    """Unload current auto-annotation model."""
+    if self.auto_annotation_service and self.auto_annotation_service.is_model_loaded():
+        reply = QMessageBox.question(
+            self,
+            "Unload Model",
+            "Unload the current model to free memory?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self.auto_annotation_service.unload_model()
+            self.status_bar.showMessage("Model unloaded")
+            QMessageBox.information(self, "Model Unloaded",
+                                  "Model unloaded successfully")
+```
+
+---
+
+## Phase 8 Implementation Steps
+
+### Step 1: Model Layer (2 hours)
+
+1. Create `models/` directory
+2. Implement `model_config.py` with config classes
+3. Implement `sam2_wrapper.py` with SAM2 integration
+4. Implement `grounding_dino_wrapper.py` with DINO integration
+5. Test model loading and inference independently
+
+### Step 2: Business Logic Layer (1 hour)
+
+1. Create `core/auto_annotation_service.py`
+2. Implement model management and inference orchestration
+3. Update `core/annotation_manager.py` documentation
+4. Add unit tests for service
+
+### Step 3: UI Layer (1-2 hours)
+
+1. Add `AutoAnnotationDialog` to `ui/dialogs.py`
+2. Update `ui/main_window.py` with menu and handlers
+3. Add progress dialog for batch processing
+4. Implement review/accept workflow (optional enhancement)
+5. Add keyboard shortcuts
+
+### Step 4: Testing & Documentation (30 minutes)
+
+1. Test with sample images
+2. Update README with auto-annotation features
+3. Add model download instructions
+4. Document configuration examples
+
+---
+
+## Dependencies
+
+Add to `requirements.txt`:
+
+```
+# Existing dependencies
+PyQt6>=6.4.0
+Pillow>=9.0.0
+
+# Phase 8: Auto-Annotation (Optional)
+# Uncomment and install only if using auto-annotation features
+# torch>=2.0.0
+# torchvision>=0.15.0
+# segment-anything-2>=0.1.0
+# groundingdino-py>=0.1.0
+# numpy>=1.24.0
+```
+
+---
+
+## Model Download Instructions
+
+Users will need to download model checkpoints:
+
+**SAM2**:
+```bash
+# Download SAM2 checkpoint
+wget https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_large.pt
+
+# Or use huggingface
+pip install huggingface_hub
+python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='facebook/sam2-hiera-large', filename='sam2_hiera_large.pt')"
+```
+
+**Grounding DINO**:
+```bash
+# Clone and download Grounding DINO
+git clone https://github.com/IDEA-Research/GroundingDINO.git
+cd GroundingDINO
+wget https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0-alpha/groundingdino_swint_ogc.pth
+```
+
+---
+
+## Phase 8 Deliverables
+
+✅ **SAM2 Integration**: Automatic mask generation and bounding box extraction
+✅ **Grounding DINO Integration**: Text-prompted object detection
+✅ **Model Management**: Load, unload, switch between models
+✅ **UI Integration**: Configuration dialog and menu commands
+✅ **Batch Processing**: Auto-annotate multiple images
+✅ **Framework-Agnostic**: Model layer separate from UI and business logic
+✅ **Optional Dependency**: App works without ML models installed
+✅ **Memory Efficient**: Models loaded on-demand, can be unloaded
+
+---
+
+## Keyboard Shortcuts (Updated)
+
+| Action | Shortcut |
+|--------|----------|
+| **Configure Auto-Annotation** | `Ctrl+M` |
+| **Run on Current Image** | `Ctrl+R` |
+| (all previous shortcuts remain unchanged) |
+
+---
+
+## Future Enhancements Beyond Phase 8
+
+- **Review Dialog**: Dedicated UI to review/accept/reject suggestions
+- **Custom Training**: Fine-tune models on user's dataset
+- **Model Zoo**: Support for additional models (YOLO, EfficientDet, etc.)
+- **Active Learning**: Suggest most uncertain annotations for review
+- **Tracking**: Video annotation with temporal consistency
