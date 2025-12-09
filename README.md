@@ -88,9 +88,20 @@ When you launch the application for the first time, you'll see a **Label Setup D
 
 ### Loading Images
 
+**Option 1: Load Individual Images**
+
 1. Click **File → Load Images** (or press `Ctrl+O`)
 2. Select one or more image files (`.jpg`, `.jpeg`, `.png`, `.bmp`, `.gif`)
 3. The first image will display automatically
+
+**Option 2: Load from Subdirectories (Phase 7)**
+
+For datasets organized into subdirectories (e.g., train/val splits):
+
+1. Click **File → Load from Subdirectories** (or press `Ctrl+Shift+O`)
+2. Select a base directory
+3. Add subdirectories (e.g., `train/images`, `val/images`)
+4. All images from selected subdirectories will load with relative paths preserved
 
 ### Annotating Images
 
@@ -147,6 +158,7 @@ The annotation appears as a green box with the label name.
 | Action | Shortcut |
 |--------|----------|
 | **Load Images** | `Ctrl+O` |
+| **Load from Subdirectories** | `Ctrl+Shift+O` |
 | **Define Labels** | `Ctrl+L` |
 | **Export Annotations** | `Ctrl+E` |
 | **Exit Application** | `Ctrl+Q` |
@@ -236,11 +248,11 @@ The annotation appears as a green box with the label name.
 ```
 image-annotation-app/
 ├── core/                        # Business logic (framework-agnostic)
-│   ├── models.py               # Data models (BoundingBox, Annotation, ImageMetadata)
+│   ├── models.py               # Data models (BoundingBox, Annotation, ImageMetadata, SubdirectoryConfig)
 │   ├── annotation_manager.py  # Annotation CRUD operations
-│   ├── image_manager.py        # Image collection & navigation
+│   ├── image_manager.py        # Image collection & navigation (with subdirectory support)
 │   ├── label_manager.py        # Label set management
-│   └── export_service.py       # Export to CSV/COCO
+│   └── export_service.py       # Export to CSV/COCO (with relative path support)
 ├── data/                        # Data layer (I/O and persistence)
 │   ├── image_loader.py         # Image file loading
 │   └── annotation_storage.py   # Annotation persistence
@@ -249,7 +261,7 @@ image-annotation-app/
 │   ├── image_canvas.py         # Interactive canvas for drawing
 │   ├── annotation_list_widget.py  # Annotation list panel
 │   ├── toolbar.py              # Navigation toolbar
-│   └── dialogs.py              # Label setup, selection, export dialogs
+│   └── dialogs.py              # Label setup, selection, export, subdirectory dialogs
 ├── utils/                       # Shared utilities
 │   └── constants.py            # App-wide constants
 ├── app.py                       # Application entry point
@@ -269,6 +281,22 @@ dog1.jpg,200,200,150,150,2,dog
 ### COCO JSON Format
 
 Standard COCO format with categories, images, and annotations.
+
+**With Subdirectory Support (Phase 7)**:
+When loading images from subdirectories, the exported COCO JSON preserves relative paths:
+
+```json
+{
+  "images": [
+    {"id": 1, "file_name": "train/images/cat1.jpg", "width": 640, "height": 480},
+    {"id": 2, "file_name": "val/images/dog1.jpg", "width": 640, "height": 480}
+  ],
+  "annotations": [...],
+  "categories": [...]
+}
+```
+
+This makes the COCO JSON portable across different systems.
 
 ## Future Extensions
 
@@ -291,7 +319,7 @@ No changes to core business logic required.
 
 ## Development Status
 
-**Current**: Phase 5 Complete - MVP Ready! 🎉
+**Current**: Phase 7 Complete - Enhanced with Subdirectory Support! 🎉
 
 ### Completed Phases
 
@@ -321,12 +349,21 @@ No changes to core business logic required.
   - Export statistics and validation
   - Integration with export dialog
 
+- ✅ **Phase 7**: Subdirectory Support
+  - SubdirectoryConfig model for base + relative paths
+  - SubdirectoryLoadDialog for directory selection
+  - Enhanced ImageManager with subdirectory loading
+  - Relative path preservation in COCO export
+  - Support for datasets organized in train/val/test splits
+  - Portable COCO JSON files with relative paths
+
 ### Future Enhancements
 
 - ⏳ **Phase 6**: Import & Edit (Post-MVP)
-  - Import from CSV/COCO JSON
+  - Import from COCO JSON format
   - Edit existing annotation labels
   - Image-annotation matching strategies
+  - Overwrite protection for exports
 
 See [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) for detailed design and implementation guide.
 

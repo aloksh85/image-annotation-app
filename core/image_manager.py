@@ -6,7 +6,8 @@ a collection of images and navigating between them.
 """
 
 from typing import Optional
-from core.models import ImageMetadata
+from pathlib import Path
+from core.models import ImageMetadata, SubdirectoryConfig
 
 
 class ImageManager:
@@ -33,6 +34,7 @@ class ImageManager:
         self._images: dict[str, ImageMetadata] = {}
         self._image_order: list[str] = []
         self._current_index: int = -1
+        self._base_path: Optional[str] = None  # Optional base path for relative paths
 
     def add_image(self, file_path: str, metadata: ImageMetadata) -> str:
         """
@@ -181,3 +183,74 @@ class ImageManager:
             List of all ImageMetadata objects in navigation order
         """
         return [self._images[img_id] for img_id in self._image_order if img_id in self._images]
+
+    def set_base_path(self, base_path: str) -> None:
+        """
+        Set base path for relative path resolution.
+
+        Args:
+            base_path: Base directory path
+        """
+        self._base_path = base_path
+
+    def get_base_path(self) -> Optional[str]:
+        """
+        Get current base path.
+
+        Returns:
+            Base path if set, None otherwise
+        """
+        return self._base_path
+
+    def load_from_subdirectories(self, config: SubdirectoryConfig, image_loader) -> int:
+        """
+        Load all images from specified subdirectories.
+
+        This method walks through each subdirectory finding supported image files
+        and stores relative paths in ImageMetadata.filename for COCO export.
+
+        Args:
+            config: SubdirectoryConfig with base path and subdirectories
+            image_loader: ImageLoader instance for loading images
+
+        Returns:
+            Number of images loaded
+
+        Example:
+            >>> config = SubdirectoryConfig("/dataset", ["train/images", "val/images"])
+            >>> count = manager.load_from_subdirectories(config, loader)
+            >>> print(f"Loaded {count} images")
+        """
+        self._base_path = config.base_path
+        loaded_count = 0
+
+        # Supported image extensions
+        image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.gif']
+
+        for subdir in config.subdirectories:
+            full_path = Path(config.base_path) / subdir
+
+            # Find all images in this subdirectory
+            for ext in image_extensions:
+                # Case-insensitive matching
+                for img_path in list(full_path.glob(f'*{ext}')) + list(full_path.glob(f'*{ext.upper()}')):
+                    if not img_path.is_file():
+                        continue
+
+                    try:
+                        # Load image using image_loader
+                        pixmap, metadata = image_loader.load_image(str(img_path))
+
+                        # Store relative path in filename for COCO export
+                        relative_path = img_path.relative_to(config.base_path)
+                        metadata.filename = str(relative_path)
+
+                        # Add to manager
+                        self.add_image(str(img_path), metadata)
+                        loaded_count += 1
+                    except Exception as e:
+                        # Skip files that can't be loaded
+                        print(f"Warning: Could not load {img_path}: {e}")
+                        continue
+
+        return loaded_count

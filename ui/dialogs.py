@@ -11,6 +11,8 @@ from PyQt6.QtWidgets import (
     QListWidgetItem, QMessageBox
 )
 from PyQt6.QtCore import Qt
+from pathlib import Path
+from core.models import SubdirectoryConfig
 
 
 class LabelSetupDialog(QDialog):
@@ -343,4 +345,198 @@ class ExportDialog(QDialog):
                     'format': self.format_combo.currentText(),
                     'path': path
                 }
+        return None
+
+
+class SubdirectoryLoadDialog(QDialog):
+    """
+    Dialog for loading images from subdirectories.
+
+    Allows user to specify base path and list of subdirectory paths.
+
+    Example:
+        >>> dialog = SubdirectoryLoadDialog()
+        >>> if dialog.exec():
+        >>>     config = dialog.get_config()  # SubdirectoryConfig object
+    """
+
+    def __init__(self, parent=None):
+        """
+        Initialize the subdirectory load dialog.
+
+        Args:
+            parent: Parent widget
+        """
+        super().__init__(parent)
+        self.setWindowTitle("Load Images from Subdirectories")
+        self.resize(600, 450)
+
+        layout = QVBoxLayout()
+
+        # Instructions
+        instructions = QLabel(
+            "Load images from multiple subdirectories under a base directory.\n"
+            "This is useful for datasets organized into train/val/test splits."
+        )
+        instructions.setWordWrap(True)
+        layout.addWidget(instructions)
+
+        # Base path selection
+        base_layout = QHBoxLayout()
+        self.base_path_input = QLineEdit()
+        self.base_path_input.setPlaceholderText("Select base directory...")
+        base_browse_btn = QPushButton("Browse...")
+        base_browse_btn.clicked.connect(self._browse_base_path)
+        base_layout.addWidget(QLabel("Base Directory:"))
+        base_layout.addWidget(self.base_path_input, stretch=1)
+        base_layout.addWidget(base_browse_btn)
+        layout.addLayout(base_layout)
+
+        # Subdirectory list
+        layout.addWidget(QLabel("Subdirectories (relative to base):"))
+
+        # List widget + add/remove buttons
+        list_layout = QHBoxLayout()
+        self.subdir_list = QListWidget()
+        list_layout.addWidget(self.subdir_list, stretch=1)
+
+        button_layout = QVBoxLayout()
+        add_btn = QPushButton("Add...")
+        remove_btn = QPushButton("Remove")
+        add_btn.clicked.connect(self._add_subdirectory)
+        remove_btn.clicked.connect(self._remove_subdirectory)
+        button_layout.addWidget(add_btn)
+        button_layout.addWidget(remove_btn)
+        button_layout.addStretch()
+        list_layout.addLayout(button_layout)
+
+        layout.addLayout(list_layout)
+
+        # Buttons
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._validate_and_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.setLayout(layout)
+
+    def _browse_base_path(self):
+        """Browse for base directory."""
+        path = QFileDialog.getExistingDirectory(
+            self,
+            "Select Base Directory"
+        )
+        if path:
+            self.base_path_input.setText(path)
+
+    def _add_subdirectory(self):
+        """Add subdirectory to list."""
+        base_path = self.base_path_input.text().strip()
+        if not base_path:
+            QMessageBox.warning(
+                self,
+                "No Base Path",
+                "Please select a base directory first."
+            )
+            return
+
+        subdir = QFileDialog.getExistingDirectory(
+            self,
+            "Select Subdirectory",
+            base_path
+        )
+
+        if subdir:
+            # Make path relative to base
+            try:
+                relative = Path(subdir).relative_to(Path(base_path))
+                relative_str = str(relative)
+
+                # Check if already added
+                for i in range(self.subdir_list.count()):
+                    if self.subdir_list.item(i).text() == relative_str:
+                        QMessageBox.information(
+                            self,
+                            "Already Added",
+                            f"Subdirectory '{relative_str}' is already in the list."
+                        )
+                        return
+
+                self.subdir_list.addItem(relative_str)
+            except ValueError:
+                QMessageBox.warning(
+                    self,
+                    "Invalid Selection",
+                    "Subdirectory must be under the base directory."
+                )
+
+    def _remove_subdirectory(self):
+        """Remove selected subdirectory from list."""
+        current = self.subdir_list.currentRow()
+        if current >= 0:
+            self.subdir_list.takeItem(current)
+
+    def _validate_and_accept(self):
+        """Validate configuration before accepting."""
+        base_path = self.base_path_input.text().strip()
+
+        if not base_path:
+            QMessageBox.warning(
+                self,
+                "No Base Path",
+                "Please select a base directory."
+            )
+            return
+
+        if self.subdir_list.count() == 0:
+            QMessageBox.warning(
+                self,
+                "No Subdirectories",
+                "Please add at least one subdirectory."
+            )
+            return
+
+        # Try to create config to validate paths
+        subdirs = [
+            self.subdir_list.item(i).text()
+            for i in range(self.subdir_list.count())
+        ]
+
+        try:
+            SubdirectoryConfig(base_path, subdirs)
+            self.accept()
+        except ValueError as e:
+            QMessageBox.critical(
+                self,
+                "Invalid Configuration",
+                f"Configuration validation failed:\n{str(e)}"
+            )
+
+    def get_config(self) -> SubdirectoryConfig | None:
+        """
+        Return SubdirectoryConfig if OK clicked.
+
+        Returns:
+            SubdirectoryConfig object or None if canceled
+        """
+        if self.result() == QDialog.DialogCode.Accepted:
+            base_path = self.base_path_input.text().strip()
+            subdirs = [
+                self.subdir_list.item(i).text()
+                for i in range(self.subdir_list.count())
+            ]
+
+            try:
+                return SubdirectoryConfig(base_path, subdirs)
+            except ValueError as e:
+                QMessageBox.warning(
+                    self,
+                    "Invalid Configuration",
+                    str(e)
+                )
+                return None
+
         return None

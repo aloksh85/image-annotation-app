@@ -17,7 +17,7 @@ from core.label_manager import LabelManager
 from core.export_service import ExportService
 from data.image_loader import ImageLoader
 from ui.image_canvas import ImageCanvas
-from ui.dialogs import LabelSetupDialog, LabelSelectionDialog, ExportDialog
+from ui.dialogs import LabelSetupDialog, LabelSelectionDialog, ExportDialog, SubdirectoryLoadDialog
 from ui.annotation_list_widget import AnnotationListWidget
 from ui.toolbar import ToolBar
 
@@ -108,6 +108,11 @@ class MainWindow(QMainWindow):
         load_action = file_menu.addAction("Load Images")
         load_action.setShortcut("Ctrl+O")
         load_action.triggered.connect(self.load_images)
+
+        # Load from subdirectories action
+        load_subdirs_action = file_menu.addAction("Load from Subdirectories...")
+        load_subdirs_action.setShortcut("Ctrl+Shift+O")
+        load_subdirs_action.triggered.connect(self.load_from_subdirectories)
 
         # Define labels action
         labels_action = file_menu.addAction("Define Labels")
@@ -234,6 +239,71 @@ class MainWindow(QMainWindow):
             )
         else:
             self.status_bar.showMessage("No images loaded")
+
+    def load_from_subdirectories(self) -> None:
+        """
+        Load images from multiple subdirectories.
+
+        Opens a dialog to select base path and subdirectories, then loads
+        all images while preserving relative paths for COCO export.
+        """
+        # Check if labels are defined
+        if not self.label_manager.has_labels():
+            QMessageBox.warning(
+                self,
+                "No Labels Defined",
+                "Please define labels first using File → Define Labels."
+            )
+            self._show_label_setup_dialog()
+            if not self.label_manager.has_labels():
+                return
+
+        # Show subdirectory selection dialog
+        dialog = SubdirectoryLoadDialog(self)
+        if not dialog.exec():
+            return
+
+        config = dialog.get_config()
+        if not config:
+            return
+
+        try:
+            # Show progress message
+            self.status_bar.showMessage("Loading images from subdirectories...")
+
+            # Load images from subdirectories
+            loaded_count = self.image_manager.load_from_subdirectories(
+                config,
+                self.image_loader
+            )
+
+            if loaded_count > 0:
+                self._display_current_image()
+                QMessageBox.information(
+                    self,
+                    "Load Successful",
+                    f"Loaded {loaded_count} image(s) from subdirectories.\n\n"
+                    f"Base path: {config.base_path}\n"
+                    f"Subdirectories: {', '.join(config.subdirectories)}"
+                )
+                self.status_bar.showMessage(
+                    f"Loaded {loaded_count} image(s) from subdirectories"
+                )
+            else:
+                QMessageBox.warning(
+                    self,
+                    "No Images",
+                    "No supported images found in specified subdirectories."
+                )
+                self.status_bar.showMessage("No images loaded")
+
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Load Failed",
+                f"Failed to load images from subdirectories:\n{str(e)}"
+            )
+            self.status_bar.showMessage("Load failed")
 
     def _display_current_image(self) -> None:
         """Display the current image and its annotations."""
