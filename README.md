@@ -18,9 +18,16 @@ A PyQt6-based desktop application for manual image annotation with clean archite
 - **Mode Switching**: Toggle between Draw and Select modes
 - **Bidirectional Sync**: Canvas and list selections stay synchronized
 
-### Export Formats
-- **CSV**: Simple tabular format with label IDs and names
-- **COCO JSON**: Industry-standard format for ML training
+### Import & Export
+- **Import COCO JSON**: Load existing annotations from COCO format with flexible image matching
+- **Export to CSV**: Simple tabular format with label IDs and names
+- **Export to COCO JSON**: Industry-standard format for ML training
+- **Overwrite Protection**: Confirmation dialog before overwriting existing export files
+
+### Annotation Management
+- **Edit Labels**: Change label of existing annotations via dropdown
+- **Smart Import**: Three-strategy image matching (direct path, basename, recursive search)
+- **Label Merging**: Imported labels integrate seamlessly with existing label sets
 
 ## Architecture
 
@@ -94,7 +101,7 @@ When you launch the application for the first time, you'll see a **Label Setup D
 2. Select one or more image files (`.jpg`, `.jpeg`, `.png`, `.bmp`, `.gif`)
 3. The first image will display automatically
 
-**Option 2: Load from Subdirectories (Phase 7)**
+**Option 2: Load from Subdirectories**
 
 For datasets organized into subdirectories (e.g., train/val splits):
 
@@ -102,6 +109,16 @@ For datasets organized into subdirectories (e.g., train/val splits):
 2. Select a base directory
 3. Add subdirectories (e.g., `train/images`, `val/images`)
 4. All images from selected subdirectories will load with relative paths preserved
+
+**Option 3: Import COCO Annotations**
+
+Load existing annotations from COCO JSON format:
+
+1. Click **File → Import COCO Annotations** (or press `Ctrl+I`)
+2. Select a COCO JSON file
+3. Optionally specify a base directory for images (or use JSON file directory)
+4. Images and annotations load automatically with smart path matching
+5. Labels from COCO file merge with your existing labels
 
 ### Annotating Images
 
@@ -132,8 +149,11 @@ The annotation appears as a green box with the label name.
   - Press `Delete` key, OR
   - Click the **Delete** button in the annotation list
 
-**Edit Label** (coming in Phase 6):
-- Select annotation → Click **Edit Label** button
+**Edit Label**:
+- Select annotation in the list
+- Click **Edit Label** button
+- Choose new label from dropdown
+- Click **OK** to update
 
 ### Navigation
 
@@ -144,12 +164,15 @@ The annotation appears as a green box with the label name.
 
 ### Exporting Annotations
 
-1. Click **File → Export Annotations**
+1. Click **File → Export Annotations** (or press `Ctrl+E`)
 2. Choose export format:
    - **CSV**: Simple tabular format
    - **COCO JSON**: Industry-standard format for ML training
 3. Select output file path
-4. Click **OK**
+4. If file exists, confirm whether to overwrite (defaults to No)
+5. Click **OK**
+
+**Tip**: When using subdirectory loading, COCO JSON exports preserve relative paths for portability
 
 ---
 
@@ -159,6 +182,7 @@ The annotation appears as a green box with the label name.
 |--------|----------|
 | **Load Images** | `Ctrl+O` |
 | **Load from Subdirectories** | `Ctrl+Shift+O` |
+| **Import COCO Annotations** | `Ctrl+I` |
 | **Define Labels** | `Ctrl+L` |
 | **Export Annotations** | `Ctrl+E` |
 | **Exit Application** | `Ctrl+Q` |
@@ -249,9 +273,10 @@ The annotation appears as a green box with the label name.
 image-annotation-app/
 ├── core/                        # Business logic (framework-agnostic)
 │   ├── models.py               # Data models (BoundingBox, Annotation, ImageMetadata, SubdirectoryConfig)
-│   ├── annotation_manager.py  # Annotation CRUD operations
+│   ├── annotation_manager.py  # Annotation CRUD operations (with label editing)
 │   ├── image_manager.py        # Image collection & navigation (with subdirectory support)
 │   ├── label_manager.py        # Label set management
+│   ├── import_service.py       # Import from COCO JSON (with smart path matching)
 │   └── export_service.py       # Export to CSV/COCO (with relative path support)
 ├── data/                        # Data layer (I/O and persistence)
 │   ├── image_loader.py         # Image file loading
@@ -261,7 +286,7 @@ image-annotation-app/
 │   ├── image_canvas.py         # Interactive canvas for drawing
 │   ├── annotation_list_widget.py  # Annotation list panel
 │   ├── toolbar.py              # Navigation toolbar
-│   └── dialogs.py              # Label setup, selection, export, subdirectory dialogs
+│   └── dialogs.py              # Label setup, selection, export, subdirectory, edit label dialogs
 ├── utils/                       # Shared utilities
 │   └── constants.py            # App-wide constants
 ├── app.py                       # Application entry point
@@ -319,7 +344,7 @@ No changes to core business logic required.
 
 ## Development Status
 
-**Current**: Phase 7 Complete - Enhanced with Subdirectory Support! 🎉
+**Current**: Phase 6 & 7 Complete - Full-Featured Annotation Tool! 🎉
 
 ### Completed Phases
 
@@ -349,6 +374,14 @@ No changes to core business logic required.
   - Export statistics and validation
   - Integration with export dialog
 
+- ✅ **Phase 6**: Import & Edit
+  - ImportService with three-strategy image matching
+  - Import from COCO JSON format with label merging
+  - EditLabelDialog for changing annotation labels
+  - update_annotation_label() method in AnnotationManager
+  - Overwrite protection for exports (defaults to No)
+  - Full integration with existing annotation workflow
+
 - ✅ **Phase 7**: Subdirectory Support
   - SubdirectoryConfig model for base + relative paths
   - SubdirectoryLoadDialog for directory selection
@@ -359,11 +392,16 @@ No changes to core business logic required.
 
 ### Future Enhancements
 
-- ⏳ **Phase 6**: Import & Edit (Post-MVP)
-  - Import from COCO JSON format
-  - Edit existing annotation labels
-  - Image-annotation matching strategies
-  - Overwrite protection for exports
+- ⏳ **ML Model Integration**: Auto-annotation suggestions
+  - SAM (Segment Anything Model) integration
+  - DINO object detection integration
+  - Integration point: `core/annotation_manager.py::suggest_annotations()`
+
+- ⏳ **Web Deployment**: REST API wrapper
+  - FastAPI backend with core business logic
+  - Web-based UI (React/Vue)
+  - Multi-user collaboration
+  - Cloud deployment
 
 See [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) for detailed design and implementation guide.
 
