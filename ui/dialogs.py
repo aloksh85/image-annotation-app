@@ -540,3 +540,80 @@ class SubdirectoryLoadDialog(QDialog):
                 return None
 
         return None
+
+
+class EditLabelDialog(QDialog):
+    """
+    Dialog for editing an annotation's label.
+
+    Shows dropdown of available labels from LabelManager, allowing users
+    to change an annotation's label after it has been created.
+
+    Example:
+        >>> dialog = EditLabelDialog(current_label_id=1, label_manager=manager)
+        >>> if dialog.exec():
+        >>>     label_id, label_name = dialog.get_selected_label()
+    """
+
+    def __init__(self, current_label_id: int, label_manager, parent=None):
+        """
+        Initialize the edit label dialog.
+
+        Args:
+            current_label_id: Current label ID of the annotation
+            label_manager: LabelManager instance with available labels
+            parent: Parent widget
+        """
+        super().__init__(parent)
+        self.setWindowTitle("Edit Label")
+        self.setMinimumWidth(300)
+        self.label_manager = label_manager
+
+        layout = QVBoxLayout()
+
+        # Instructions
+        layout.addWidget(QLabel("Select new label for this annotation:"))
+
+        # Label dropdown
+        self.label_combo = QComboBox()
+        labels = label_manager.get_all_labels()  # {id: name}
+
+        for label_id, label_name in sorted(labels.items()):
+            self.label_combo.addItem(f"{label_id}: {label_name}", label_id)
+
+        # Set current label as selected
+        for i in range(self.label_combo.count()):
+            if self.label_combo.itemData(i) == current_label_id:
+                self.label_combo.setCurrentIndex(i)
+                break
+
+        layout.addWidget(self.label_combo)
+
+        # Buttons
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.setLayout(layout)
+
+        # Focus on combo box
+        self.label_combo.setFocus()
+
+    def get_selected_label(self) -> tuple[int, str] | None:
+        """
+        Get the selected label.
+
+        Returns:
+            Tuple of (label_id, label_name) if OK clicked, None if canceled
+        """
+        if self.result() == QDialog.DialogCode.Accepted:
+            label_id = self.label_combo.currentData()
+            # Extract label name from "ID: name" format
+            label_text = self.label_combo.currentText()
+            label_name = label_text.split(': ', 1)[1] if ': ' in label_text else label_text
+            return (label_id, label_name)
+        return None

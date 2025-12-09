@@ -11,13 +11,16 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 
+from pathlib import Path
+
 from core.annotation_manager import AnnotationManager
 from core.image_manager import ImageManager
 from core.label_manager import LabelManager
 from core.export_service import ExportService
+from core.import_service import ImportService
 from data.image_loader import ImageLoader
 from ui.image_canvas import ImageCanvas
-from ui.dialogs import LabelSetupDialog, LabelSelectionDialog, ExportDialog, SubdirectoryLoadDialog
+from ui.dialogs import LabelSetupDialog, LabelSelectionDialog, ExportDialog, SubdirectoryLoadDialog, EditLabelDialog
 from ui.annotation_list_widget import AnnotationListWidget
 from ui.toolbar import ToolBar
 
@@ -48,6 +51,7 @@ class MainWindow(QMainWindow):
         self.image_manager = ImageManager()
         self.label_manager = LabelManager()
         self.export_service = ExportService()
+        self.import_service = ImportService()
 
         # Initialize data layer
         self.image_loader = ImageLoader()
@@ -114,6 +118,11 @@ class MainWindow(QMainWindow):
         load_subdirs_action.setShortcut("Ctrl+Shift+O")
         load_subdirs_action.triggered.connect(self.load_from_subdirectories)
 
+        # Import COCO annotations action
+        import_action = file_menu.addAction("Import COCO Annotations")
+        import_action.setShortcut("Ctrl+I")
+        import_action.triggered.connect(self.import_annotations)
+
         # Define labels action
         labels_action = file_menu.addAction("Define Labels")
         labels_action.setShortcut("Ctrl+L")
@@ -150,6 +159,7 @@ class MainWindow(QMainWindow):
         if self.annotation_list:
             self.annotation_list.annotation_deleted.connect(self._on_annotation_deleted_from_list)
             self.annotation_list.annotation_selected.connect(self._on_annotation_selected)
+            self.annotation_list.annotation_edit_requested.connect(self._on_edit_label_requested)
             # Bidirectional sync: canvas selection → list selection
             self.canvas.annotation_selected.connect(self.annotation_list.select_annotation)
 
@@ -304,6 +314,133 @@ class MainWindow(QMainWindow):
                 f"Failed to load images from subdirectories:\n{str(e)}"
             )
             self.status_bar.showMessage("Load failed")
+
+    def import_annotations(self) -> None:
+        """
+        Import annotations from COCO JSON file.
+
+        Opens file dialog to select COCO JSON, optionally asks for base image path,
+        then loads images and annotations. Merges imported labels with existing labels.
+        """
+        # Select COCO JSON file
+        coco_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select COCO JSON File",
+            "",
+            "JSON Files (*.json)"
+        )
+
+        if not coco_path:
+            return
+
+        # Ask for base image directory (optional)
+        reply = QMessageBox.question(
+            self,
+            "Base Image Directory",
+            "Do you want to specify a base directory for images?\n\n"
+            "Click Yes to browse for a directory.\n"
+            "Click No to use the COCO JSON file directory.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+
+        base_path = None
+        if reply == QMessageBox.StandardButton.Yes:
+            base_path = QFileDialog.getExistingDirectory(
+                self,
+                "Select Base Image Directory"
+            )
+            if not base_path:  # User cancelled
+                return
+
+        try:
+            # Import annotations
+            self.status_bar.showMessage("Importing annotations...")
+
+            imported_images, label_map = self.import_service.import_from_coco(
+                coco_path,
+                base_path
+            )
+
+            if not imported_images:
+                QMessageBox.warning(
+                    self,
+                    "No Images Imported",
+                    "No images could be matched from the COCO JSON file.\n"
+                    "Please check the image paths and base directory."
+                )
+                self.status_bar.showMessage("Import failed - no images matched")
+                return
+
+            # Update LabelManager with imported labels
+            existing_labels = self.label_manager.get_all_labels()
+            new_labels_added = 0
+
+            for label_id, label_name in label_map.items():
+                if label_id not in existing_labels:
+                    self.label_manager.add_label(label_id, label_name)
+                    new_labels_added += 1
+
+            # Add imported images to ImageManager
+            loaded_count = 0
+            total_annotations = 0
+
+            for img_metadata in imported_images:
+                # Add to image manager
+                self.image_manager.add_image(img_metadata.file_path, img_metadata)
+
+                # Register annotations with AnnotationManager
+                for annotation in img_metadata.annotations:
+                    annotation.image_id = img_metadata.id
+                    self.annotation_manager._annotations[annotation.id] = annotation
+                    total_annotations += 1
+
+                loaded_count += 1
+
+            # Display first imported image
+            if loaded_count > 0:
+                self._display_current_image()
+
+                # Show success message
+                message = f"Successfully imported:\n\n"
+                message += f"  • {loaded_count} image(s)\n"
+                message += f"  • {total_annotations} annotation(s)\n"
+                if new_labels_added > 0:
+                    message += f"  • {new_labels_added} new label(s) added"
+
+                QMessageBox.information(
+                    self,
+                    "Import Successful",
+                    message
+                )
+
+                self.status_bar.showMessage(
+                    f"Imported {loaded_count} images, {total_annotations} annotations"
+                )
+
+        except FileNotFoundError as e:
+            QMessageBox.critical(
+                self,
+                "File Not Found",
+                f"COCO JSON file not found:\n{str(e)}"
+            )
+            self.status_bar.showMessage("Import failed - file not found")
+
+        except ValueError as e:
+            QMessageBox.critical(
+                self,
+                "Invalid Format",
+                f"Invalid COCO JSON format:\n{str(e)}"
+            )
+            self.status_bar.showMessage("Import failed - invalid format")
+
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Import Failed",
+                f"Failed to import annotations:\n{str(e)}"
+            )
+            self.status_bar.showMessage("Import failed")
 
     def _display_current_image(self) -> None:
         """Display the current image and its annotations."""
@@ -484,6 +621,50 @@ class MainWindow(QMainWindow):
             f"Deleted annotation ({len(current_image.annotations)} remaining)"
         )
 
+    def _on_edit_label_requested(self, annotation_id: str) -> None:
+        """
+        Handle edit label request from annotation list widget.
+
+        Shows dialog to select new label and updates the annotation.
+
+        Args:
+            annotation_id: ID of annotation to edit
+        """
+        # Get current annotation
+        annotation = self.annotation_manager.get_annotation(annotation_id)
+        if not annotation:
+            return
+
+        # Show edit label dialog
+        dialog = EditLabelDialog(
+            annotation.label_id,
+            self.label_manager,
+            self
+        )
+
+        if dialog.exec():
+            result = dialog.get_selected_label()
+            if result:
+                new_label_id, new_label_name = result
+
+                # Update annotation
+                success = self.annotation_manager.update_annotation_label(
+                    annotation_id,
+                    new_label_id,
+                    new_label_name
+                )
+
+                if success:
+                    # Refresh display
+                    current_image = self.image_manager.get_current_image()
+                    if current_image:
+                        self.canvas.set_annotations(current_image.annotations)
+                        self.annotation_list.set_annotations(current_image.annotations)
+
+                    self.status_bar.showMessage(
+                        f"Updated label to: {new_label_id}: {new_label_name}"
+                    )
+
     def export_annotations(self) -> None:
         """
         Export annotations to file.
@@ -539,6 +720,21 @@ class MainWindow(QMainWindow):
 
         if not file_path:
             return
+
+        # Check if file exists and warn user (Phase 6: overwrite protection)
+        if Path(file_path).exists():
+            reply = QMessageBox.question(
+                self,
+                "File Exists",
+                f"File already exists:\n{file_path}\n\n"
+                "Do you want to overwrite it?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No  # Default to No (don't overwrite)
+            )
+
+            if reply == QMessageBox.StandardButton.No:
+                self.status_bar.showMessage("Export cancelled")
+                return
 
         try:
             # Export using the service

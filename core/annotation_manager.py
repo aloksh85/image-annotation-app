@@ -120,6 +120,40 @@ class AnnotationManager:
 
         return True
 
+    def update_annotation_label(
+        self,
+        annotation_id: str,
+        new_label_id: int,
+        new_label_name: str
+    ) -> bool:
+        """
+        Update the label of an existing annotation.
+
+        This is a convenience method specifically for updating labels,
+        used by the Edit Label feature in Phase 6.
+
+        Args:
+            annotation_id: ID of annotation to update
+            new_label_id: New integer label ID
+            new_label_name: New label name
+
+        Returns:
+            True if successful, False if annotation not found
+
+        Example:
+            >>> manager.update_annotation_label("abc123", 2, "dog")
+            True
+        """
+        annotation = self._annotations.get(annotation_id)
+        if not annotation:
+            return False
+
+        annotation.label_id = new_label_id
+        annotation.label_name = new_label_name
+        annotation.modified_at = datetime.now()
+
+        return True
+
     def delete_annotation(self, annotation_id: str) -> bool:
         """
         Delete an annotation.
