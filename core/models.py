@@ -8,6 +8,7 @@ with any UI framework (PyQt, web, CLI, etc.).
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
+from pathlib import Path
 import uuid
 
 
@@ -187,3 +188,51 @@ class ImageMetadata:
             if ann.id == annotation_id:
                 return ann
         return None
+
+
+@dataclass
+class SubdirectoryConfig:
+    """
+    Configuration for loading images from subdirectories.
+
+    Attributes:
+        base_path: Base directory path
+        subdirectories: List of relative paths from base
+    """
+    base_path: str
+    subdirectories: list[str]
+
+    def __post_init__(self):
+        """Validate paths exist."""
+        base = Path(self.base_path)
+        if not base.exists():
+            raise ValueError(f"Base path does not exist: {self.base_path}")
+
+        if not base.is_dir():
+            raise ValueError(f"Base path is not a directory: {self.base_path}")
+
+        for subdir in self.subdirectories:
+            full_path = base / subdir
+            if not full_path.exists():
+                raise ValueError(f"Subdirectory does not exist: {full_path}")
+            if not full_path.is_dir():
+                raise ValueError(f"Subdirectory is not a directory: {full_path}")
+
+    def get_full_path(self, relative_path: str) -> str:
+        """Convert relative path to absolute path."""
+        return str(Path(self.base_path) / relative_path)
+
+    def get_relative_path(self, absolute_path: str) -> str:
+        """
+        Convert absolute path to relative path (from base).
+
+        Returns:
+            Relative path if the file is under base_path, otherwise just the filename.
+        """
+        abs_path = Path(absolute_path)
+        base = Path(self.base_path)
+        try:
+            return str(abs_path.relative_to(base))
+        except ValueError:
+            # Path is not relative to base, return filename only
+            return abs_path.name

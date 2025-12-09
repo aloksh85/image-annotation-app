@@ -76,7 +76,8 @@ class ExportService:
     def export_to_coco(
         self,
         images: list[ImageMetadata],
-        output_path: str
+        output_path: str,
+        use_relative_paths: bool = True
     ) -> None:
         """
         Export annotations to COCO JSON format.
@@ -93,10 +94,17 @@ class ExportService:
         Args:
             images: List of ImageMetadata objects with annotations
             output_path: Path to output JSON file
+            use_relative_paths: If True, uses image.filename field (which may contain
+                               relative paths like "train/images/cat.jpg").
+                               If False, uses just the basename from file_path.
 
         Raises:
             IOError: If file cannot be written
             ValueError: If images list is empty
+
+        Note:
+            When images are loaded using load_from_subdirectories(), the filename
+            field contains relative paths. This allows for portable COCO JSON files.
         """
         if not images:
             raise ValueError("No images to export")
@@ -115,10 +123,18 @@ class ExportService:
         annotation_id = 1
 
         for image_idx, image in enumerate(images, start=1):
+            # Determine file name to use
+            # If use_relative_paths is True, use filename (may contain subdirs)
+            # Otherwise, extract just the basename from file_path
+            if use_relative_paths:
+                file_name = image.filename
+            else:
+                file_name = Path(image.file_path).name
+
             # Add image entry
             coco_data["images"].append({
                 "id": image_idx,
-                "file_name": image.filename,
+                "file_name": file_name,
                 "width": image.width,
                 "height": image.height,
                 "date_captured": "",
